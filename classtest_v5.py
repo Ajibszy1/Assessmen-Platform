@@ -6,7 +6,7 @@ import hashlib
 import json
 import io
 from datetime import datetime
-from supabase import create_client, Client
+import requests
 
 st.set_page_config(page_title="Secure Assessment Platform", layout="wide", initial_sidebar_state="collapsed")
 
@@ -15,73 +15,80 @@ MAX_TAB_SWITCHES = 2
 MAX_RETAKES      = 1
 
 # =====================================================================
-# SUPABASE CLIENT
+# SUPABASE REST CLIENT (direct HTTP — no supabase-py dependency issues)
 # =====================================================================
-@st.cache_resource
-def get_supabase() -> Client:
+def _base():
     url = st.secrets["supabase"]["url"].strip().rstrip("/")
-    key = st.secrets["supabase"]["service_role_key"].strip()
     if "/rest/" in url: url = url.split("/rest/")[0]
-    if "/auth/" in url: url = url.split("/auth/")[0]
-    if "/dashboard/" in url: url = "https://" + url.split("supabase.co")[0].split(".")[-2] + ".supabase.co"
-    return create_client(url, key)
+    if "/dashboard/" in url:
+        pid = url.split("/project/")[1].split("/")[0]
+        url = f"https://{pid}.supabase.co"
+    return url
 
-def db() -> Client:
-    return get_supabase()
+def _headers():
+    key = st.secrets["supabase"]["service_role_key"].strip()
+    return {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "Prefer": "return=representation"
+    }
 
-def get_admin_credentials():
-    try: return st.secrets["admin"]["email"], st.secrets["admin"]["password"]
-    except Exception: return "admin@academy.com", "admin123"
+def _url(table):
+    return f"{_base()}/rest/v1/{table}"
 
-# =====================================================================
-# DB HELPERS
-# =====================================================================
 def db_all(table, filters=None):
     try:
-        q = db().table(table).select("*")
+        params = {"select": "*"}
         if filters:
             for col, val in filters.items():
-                q = q.eq(col, val)
-        r = q.execute()
-        return pd.DataFrame(r.data) if r.data else pd.DataFrame()
+                params[col] = f"eq.{val}"
+        r = requests.get(_url(table), headers=_headers(), params=params)
+        if r.status_code == 200:
+            data = r.json()
+            return pd.DataFrame(data) if data else pd.DataFrame()
+        else:
+            st.error(f"DB read error ({table}): {r.json()}")
+            return pd.DataFrame()
     except Exception as e:
         st.error(f"DB read error ({table}): {e}")
         return pd.DataFrame()
 
 def db_insert(table, row):
     try:
-        db().table(table).insert(row).execute()
-        return True
+        r = requests.post(_url(table), headers=_headers(), json=row)
+        return r.status_code in [200, 201]
     except Exception as e:
         st.error(f"DB insert error ({table}): {e}")
         return False
 
 def db_upsert(table, row, on_conflict):
     try:
-        db().table(table).upsert(row, on_conflict=on_conflict).execute()
-        return True
+        h = {**_headers(), "Prefer": f"resolution=merge-duplicates,return=representation"}
+        r = requests.post(_url(table), headers=h, json=row)
+        return r.status_code in [200, 201]
     except Exception as e:
         st.error(f"DB upsert error ({table}): {e}")
         return False
 
 def db_update(table, match, data):
     try:
-        q = db().table(table)
+        params = {}
         for col, val in match.items():
-            q = q.eq(col, val)
-        q.update(data).execute()
-        return True
+            params[col] = f"eq.{val}"
+        r = requests.patch(_url(table), headers=_headers(), params=params, json=data)
+        return r.status_code in [200, 204]
     except Exception as e:
         st.error(f"DB update error ({table}): {e}")
         return False
 
 def db_delete(table, match):
     try:
-        q = db().table(table)
+        params = {}
         for col, val in match.items():
-            q = q.eq(col, val)
-        q.delete().execute()
-        return True
+            params[col] = f"eq.{val}"
+        r = requests.delete(_url(table), headers=_headers(), params=params)
+        return r.status_code in [200, 204]
     except Exception as e:
         st.error(f"DB delete error ({table}): {e}")
         return False
@@ -89,6 +96,25 @@ def db_delete(table, match):
 def db_one(table, filters):
     df = db_all(table, filters)
     return df.iloc[0].to_dict() if not df.empty else None
+
+def db_count(table, filters):
+    try:
+        params = {"select": "id"}
+        if filters:
+            for col, val in filters.items():
+                params[col] = f"eq.{val}"
+        h = {**_headers(), "Prefer": "count=exact"}
+        r = requests.get(_url(table), headers=h, params=params)
+        count = int(r.headers.get("content-range","0/0").split("/")[-1])
+        return count
+    except Exception:
+        return 0
+
+def get_admin_credentials():
+    try: return st.secrets["admin"]["email"], st.secrets["admin"]["password"]
+    except Exception: return "admin@academy.com", "admin123"
+
+
 
 # =====================================================================
 # HELPERS
@@ -251,8 +277,7 @@ if st.session_state.page=="login":
         attempts=int(student.get("login_attempts",0) or 0)
         if attempts>=5: st.error("⛔ Too many failed attempts. Contact instructor."); st.stop()
         with st.spinner("Finding course..."):
-            courses_r=db().table("courses").select("*").eq("enabled",True).eq("access_code",code).execute()
-            courses=pd.DataFrame(courses_r.data) if courses_r.data else pd.DataFrame()
+            courses=db_all("courses", {"enabled": "true", "access_code": code})
         if courses.empty:
             db_update("students",{"email":email},{"login_attempts":attempts+1})
             st.error("⛔ Invalid code or course not active."); st.stop()
@@ -264,8 +289,7 @@ if st.session_state.page=="login":
         device_id=make_device_id(email)
         blk=db_one("blocked_devices",{"device_id":device_id})
         if blk and not blk.get("unblocked_at"): st.error("⛔ Device blocked. Contact instructor."); st.stop()
-        attempts_r=db().table("results").select("id",count="exact").eq("email",email).eq("course_id",course_id).execute()
-        attempts_done=attempts_r.count or 0
+        attempts_done=db_count("results",{"email":email,"course_id":course_id})
         if attempts_done>MAX_RETAKES: st.error(f"⛔ All {MAX_RETAKES+1} attempts used for **{course_name}**."); st.stop()
         attempt_num=attempts_done+1
         with st.spinner("Checking saved session..."):
@@ -282,8 +306,7 @@ if st.session_state.page=="login":
                     "current_course":course,"instructions_accepted":True,"page":"quiz"})
                 st.success("🔄 Resuming saved session..."); time.sleep(0.8); st.rerun()
         with st.spinner("Loading questions..."):
-            q_r=db().table("questions").select("*").eq("course_id",course_id).execute()
-            q_df=pd.DataFrame(q_r.data) if q_r.data else pd.DataFrame()
+            q_df=db_all("questions",{"course_id":course_id})
         if q_df.empty: st.error("⛔ No questions found for this course."); st.stop()
         if q_count>0 and len(q_df)>q_count: q_df=q_df.sample(n=q_count).reset_index(drop=True)
         else: q_df=q_df.sample(frac=1).reset_index(drop=True)
@@ -563,7 +586,7 @@ elif st.session_state.page=="admin":
                                                 "difficulty":str(qrow.get("difficulty","medium"))})
                                         if rows:
                                             for chunk in [rows[i:i+50] for i in range(0,len(rows),50)]:
-                                                db().table("questions").insert(chunk).execute()
+                                                requests.post(_url("questions"), headers=_headers(), json=chunk)
                                             db_update("courses",{"course_id":cid_},{"question_count":len(rows)})
                                         st.success(f"✅ {len(rows)} questions saved!"); st.rerun()
                         except Exception as e: st.error(f"Error: {e}")
@@ -593,7 +616,8 @@ elif st.session_state.page=="admin":
                             with st.spinner("Uploading..."):
                                 rows=[{"email":r["Email"],"name":r["Name"],"login_attempts":0} for _,r in sdf.iterrows()]
                                 for chunk in [rows[i:i+50] for i in range(0,len(rows),50)]:
-                                    db().table("students").upsert(chunk,on_conflict="email").execute()
+                                    h2={**_headers(),"Prefer":"resolution=merge-duplicates,return=representation"}
+                                    requests.post(_url("students"),headers=h2,json=chunk)
                             st.success(f"✅ {len(rows)} uploaded!"); st.rerun()
                 except Exception as e: st.error(f"Error: {e}")
         with c2:
@@ -643,8 +667,8 @@ elif st.session_state.page=="admin":
                 rt_c=st.selectbox("Course:",[""]+c_df["course_id"].tolist(),key="rt_c")
                 rt_e=st.selectbox("Student:",[""]+res_df["email"].tolist(),key="rt_e")
                 if rt_c and rt_e:
-                    cnt_r=db().table("results").select("id",count="exact").eq("email",rt_e).eq("course_id",rt_c).execute()
-                    st.info(f"{rt_e} has **{cnt_r.count or 0}** attempt(s).")
+                    cnt=db_count("results",{"email":rt_e,"course_id":rt_c})
+                    st.info(f"{rt_e} has **{cnt}** attempt(s).")
                     if st.button("🗑️ Delete All Attempts (full reset)"):
                         db_delete("results",{"email":rt_e,"course_id":rt_c})
                         st.success(f"✅ Reset for {rt_e}"); st.rerun()
@@ -707,9 +731,10 @@ elif st.session_state.page=="admin":
                                 sub_id=int(sub_r["id"])
                                 db_update("submissions",{"id":sub_id},{"overrides_json":json.dumps(new_ovr),
                                     "corrected_by":AE,"corrected_at":datetime.now().isoformat()})
-                                res_r=db().table("results").select("id").eq("email",sel_email).eq("course_id",rev_cid).order("submit_time",desc=True).limit(1).execute()
-                                if res_r.data:
-                                    db_update("results",{"id":res_r.data[0]["id"]},{"score":pc,"percentage":pp})
+                                res_all=db_all("results",{"email":sel_email,"course_id":rev_cid})
+                                if not res_all.empty:
+                                    latest_id=int(res_all.sort_values("submit_time",ascending=False).iloc[0]["id"])
+                                    db_update("results",{"id":latest_id},{"score":pc,"percentage":pp})
                                 st.success(f"✅ Saved! {pc}/{pt} ({pp:.1f}%)"); st.rerun()
 
     with tab_leader:
