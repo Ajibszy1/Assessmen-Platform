@@ -19,8 +19,11 @@ MAX_RETAKES      = 1
 # =====================================================================
 @st.cache_resource
 def get_supabase() -> Client:
-    url = st.secrets["supabase"]["url"]
-    key = st.secrets["supabase"]["service_role_key"]
+    url = st.secrets["supabase"]["url"].strip().rstrip("/")
+    key = st.secrets["supabase"]["service_role_key"].strip()
+    if "/rest/" in url: url = url.split("/rest/")[0]
+    if "/auth/" in url: url = url.split("/auth/")[0]
+    if "/dashboard/" in url: url = "https://" + url.split("supabase.co")[0].split(".")[-2] + ".supabase.co"
     return create_client(url, key)
 
 def db() -> Client:
