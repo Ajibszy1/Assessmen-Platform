@@ -148,8 +148,8 @@ def validate_questions(df):
     missing = [c for c in ["question","answer","type"] if c not in df.columns]
     if missing: return False, f"Missing columns: {', '.join(missing)}"
     if df.empty: return False, "No data rows."
-    inv = df[~df["type"].isin(["mcq","short"])]["type"].unique()
-    if len(inv): return False, f"Invalid types: {list(inv)}. Use 'mcq' or 'short'."
+    inv = df[~df["type"].isin(["mcq","short","code"])]["type"].unique()
+    if len(inv): return False, f"Invalid types: {list(inv)}. Use 'mcq', 'short', or 'code'."
     return True, ""
 
 def build_excel(df):
@@ -157,7 +157,7 @@ def build_excel(df):
     with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
         df.to_excel(writer, index=False, sheet_name="Results")
         wb = writer.book; ws = writer.sheets["Results"]
-        hdr = wb.add_format({"bold":True,"bg_color":"#667eea","font_color":"white","border":1,"align":"center"})
+        hdr = wb.add_format({"bold":True,"bg_color":"#14213D","font_color":"#FCA311","border":1,"align":"center"})
         pf  = wb.add_format({"bg_color":"#d1fae5","border":1})
         ff  = wb.add_format({"bg_color":"#fee2e2","border":1})
         for ci, val in enumerate(df.columns):
@@ -269,36 +269,174 @@ def get_code_editor_html(qkey, current_code=""):
 
 st.markdown("""
 <style>
-    .stApp > header,.stAppHeader,[data-testid="stHeader"],[data-testid="stToolbar"],
-    .stDeployButton,.viewerBadge_container__r5tak{display:none !important;}
-    #MainMenu,footer{visibility:hidden;}
-    #root > div:first-child{margin-top:0 !important;}
-    .main .block-container{padding-top:1rem !important;max-width:100% !important;}
-    .stApp{background:linear-gradient(135deg,#667eea 0%,#764ba2 100%) !important;}
-    *{font-family:'Inter',sans-serif;}
-    .exam-container{background:white;border-radius:20px;padding:2.5rem;
-        box-shadow:0 25px 80px rgba(0,0,0,0.2);max-width:920px;margin:1.5rem auto;}
-    .question-card{background:#f8fafc;border-left:5px solid #667eea;
-        padding:1.5rem;margin:1.5rem 0;border-radius:12px;}
-    .instruction-box{background:#eff6ff;border:2px solid #667eea;
-        border-radius:16px;padding:2rem;margin:1rem 0;}
-    .stButton>button{background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);
-        color:white;border:none;padding:0.875rem 2.5rem;
-        border-radius:10px;font-weight:700;width:100%;}
-    .score-circle{width:180px;height:180px;border-radius:50%;
-        display:flex;align-items:center;justify-content:center;
-        margin:0 auto 2rem;color:white;font-size:3rem;font-weight:800;}
-    .lb-row{display:flex;align-items:center;padding:0.75rem 1rem;
-        border-radius:10px;margin:0.4rem 0;background:#f1f5f9;}
-    .lb-rank{font-size:1.5rem;font-weight:800;width:48px;}
-    .lb-name{flex:1;font-weight:600;}
-    .lb-score{font-size:1.1rem;font-weight:700;color:#667eea;}
-    .lb-gold{background:linear-gradient(90deg,#fef9c3,#fde68a);}
-    .code-editor-wrap{background:#1e1e1e;border-radius:12px;padding:1rem;margin:0.5rem 0;}
-    .code-output{background:#0d1117;border-radius:8px;padding:1rem;margin-top:0.5rem;
-        font-family:monospace;color:#58a6ff;font-size:0.9rem;white-space:pre-wrap;}
-    .lb-silver{background:linear-gradient(90deg,#f1f5f9,#e2e8f0);}
-    .lb-bronze{background:linear-gradient(90deg,#fff7ed,#fed7aa);}
+    /* ── NUCLEAR white bar/header removal ── */
+    .stApp > header { display:none !important; height:0 !important; }
+    .stAppHeader { display:none !important; }
+    [data-testid="stHeader"] { display:none !important; }
+    [data-testid="stToolbar"] { display:none !important; }
+    [data-testid="stDecoration"] { display:none !important; }
+    [data-testid="stStatusWidget"] { display:none !important; }
+    .stDeployButton { display:none !important; }
+    .viewerBadge_container__r5tak { display:none !important; }
+    #MainMenu { visibility:hidden !important; }
+    footer { visibility:hidden !important; }
+    iframe[title="streamlit_analytics"] { display:none !important; }
+    section[data-testid="stSidebar"] { display:none !important; }
+
+    /* ── Remove all top padding/margin ── */
+    html, body { margin:0 !important; padding:0 !important; }
+    .main { padding-top:0 !important; margin-top:0 !important; }
+    .main .block-container {
+        padding-top:0.5rem !important;
+        padding-bottom:1rem !important;
+        max-width:100% !important;
+        margin-top:0 !important;
+    }
+    div[data-testid="stAppViewContainer"] {
+        padding-top:0 !important;
+        margin-top:0 !important;
+    }
+
+    /* ── Brand colors: Prussian Blue + Orange ── */
+    :root {
+        --primary: #14213D;
+        --accent:  #FCA311;
+        --light:   #E5E5E5;
+        --white:   #FFFFFF;
+        --dark:    #000000;
+    }
+
+    /* ── Background ── */
+    .stApp {
+        background: linear-gradient(160deg, #14213D 0%, #1a2f5e 60%, #0d1929 100%) !important;
+        min-height:100vh !important;
+    }
+
+    /* ── Fonts ── */
+    * { font-family:'Inter','Segoe UI',sans-serif; }
+
+    /* ── Cards ── */
+    .exam-container {
+        background:#FFFFFF;
+        border-radius:16px;
+        padding:2.5rem;
+        box-shadow:0 20px 60px rgba(0,0,0,0.4);
+        max-width:920px;
+        margin:1rem auto;
+        border-top:5px solid #FCA311;
+    }
+    .question-card {
+        background:#f8f9fa;
+        border-left:5px solid #FCA311;
+        padding:1.5rem;
+        margin:1.5rem 0;
+        border-radius:12px;
+        box-shadow:0 2px 8px rgba(0,0,0,0.08);
+    }
+    .instruction-box {
+        background:#14213D;
+        border:2px solid #FCA311;
+        border-radius:16px;
+        padding:2rem;
+        margin:1rem 0;
+        color:#FFFFFF !important;
+    }
+    .instruction-box h3, .instruction-box p,
+    .instruction-box li, .instruction-box td,
+    .instruction-box th { color:#FFFFFF !important; }
+    .instruction-box table { width:100%; border-collapse:collapse; }
+    .instruction-box td, .instruction-box th {
+        padding:8px 12px;
+        border:1px solid rgba(252,163,17,0.3);
+    }
+    .instruction-box strong { color:#FCA311 !important; }
+    .instruction-box hr { border-color:rgba(252,163,17,0.4); }
+
+    /* ── Quiz header bar ── */
+    .quiz-header {
+        display:flex;
+        justify-content:space-between;
+        align-items:center;
+        background:rgba(255,255,255,0.08);
+        padding:1rem 1.5rem;
+        border-radius:14px;
+        margin-bottom:16px;
+        border:1px solid rgba(252,163,17,0.3);
+    }
+
+    /* ── Buttons ── */
+    .stButton>button {
+        background:linear-gradient(135deg,#FCA311 0%,#e8940a 100%) !important;
+        color:#14213D !important;
+        border:none !important;
+        padding:0.875rem 2.5rem !important;
+        border-radius:10px !important;
+        font-weight:800 !important;
+        width:100% !important;
+        font-size:1rem !important;
+        transition:opacity 0.2s !important;
+    }
+    .stButton>button:hover { opacity:0.88 !important; }
+
+    /* ── Score circle ── */
+    .score-circle {
+        width:180px; height:180px; border-radius:50%;
+        display:flex; align-items:center; justify-content:center;
+        margin:0 auto 2rem; color:white;
+        font-size:3rem; font-weight:800;
+        box-shadow:0 8px 32px rgba(0,0,0,0.3);
+    }
+
+    /* ── Leaderboard ── */
+    .lb-row {
+        display:flex; align-items:center; padding:0.75rem 1rem;
+        border-radius:10px; margin:0.4rem 0; background:#E5E5E5;
+    }
+    .lb-rank { font-size:1.5rem; font-weight:800; width:48px; }
+    .lb-name { flex:1; font-weight:600; color:#14213D; }
+    .lb-score { font-size:1.1rem; font-weight:700; color:#FCA311; }
+    .lb-gold   { background:linear-gradient(90deg,#fef9c3,#fde68a); }
+    .lb-silver { background:linear-gradient(90deg,#f1f5f9,#e2e8f0); }
+    .lb-bronze { background:linear-gradient(90deg,#fff7ed,#fed7aa); }
+
+    /* ── Input styling ── */
+    .stTextInput input, .stTextArea textarea {
+        border:2px solid #E5E5E5 !important;
+        border-radius:8px !important;
+    }
+    .stTextInput input:focus, .stTextArea textarea:focus {
+        border-color:#FCA311 !important;
+        box-shadow:0 0 0 3px rgba(252,163,17,0.2) !important;
+    }
+
+    /* ── Radio buttons ── */
+    .stRadio > div { gap:8px; }
+
+    /* ── Admin tabs ── */
+    .stTabs [data-baseweb="tab"] {
+        font-weight:600 !important;
+        color:#14213D !important;
+    }
+    .stTabs [aria-selected="true"] {
+        color:#FCA311 !important;
+        border-bottom:3px solid #FCA311 !important;
+    }
+
+    /* ── Progress bar ── */
+    .stProgress > div > div { background-color:#FCA311 !important; }
+
+    /* ── Code editor ── */
+    .code-editor-wrap {
+        background:#1e1e1e; border-radius:12px;
+        padding:1rem; margin:0.5rem 0;
+        border:1px solid #FCA311;
+    }
+    .code-output {
+        background:#0d1117; border-radius:8px;
+        padding:1rem; margin-top:0.5rem;
+        font-family:monospace; color:#58a6ff;
+        font-size:0.9rem; white-space:pre-wrap;
+    }
 </style>""", unsafe_allow_html=True)
 
 for k,v in {"page":"login","answers":{},"questions":[],"current_course":None,
@@ -407,30 +545,28 @@ elif st.session_state.page=="instructions":
     st.markdown('<div class="exam-container">',unsafe_allow_html=True)
     st.title(f"📋 {course.get('course_name','Exam')} — Instructions")
     if attempt_n>1: st.warning(f"⚠️ This is your **Attempt {attempt_n}** of {MAX_RETAKES+1}.")
-    st.markdown(f"""<div class="instruction-box">
-
-### 📌 Before You Begin
-
-| | |
-|---|---|
-| ⏱️ **Duration** | {duration} minutes |
-| ❓ **Questions** | {total_q} questions |
-| 🎯 **Pass Mark** | {pass_mark}% |
-| 🔁 **Attempts** | {MAX_RETAKES+1} total (you are on attempt {attempt_n}) |
-
----
-
-### 📜 Rules
-
-1. **Do not switch tabs or windows.** You get {MAX_TAB_SWITCHES} warnings — then auto-submit.
-2. **Do not press PrintScreen or F12** — detected and recorded.
-3. **No copying or pasting** during the exam.
-4. **Exam auto-submits** when the timer runs out.
-5. **Progress saves** automatically every 60 seconds — you can log back in to resume.
-
----
-✅ **By clicking Start, you agree to these rules.**
-</div>""",unsafe_allow_html=True)
+    st.markdown(f"""
+    <div class="instruction-box">
+    <h3 style="color:#FCA311;margin-top:0;">&#x1F4CC; Before You Begin</h3>
+    <table>
+      <tr><td>&#x23F1; <strong>Duration</strong></td><td style="color:#FCA311;">{duration} minutes</td></tr>
+      <tr><td>&#x2753; <strong>Questions</strong></td><td style="color:#FCA311;">{total_q} questions</td></tr>
+      <tr><td>&#x1F3AF; <strong>Pass Mark</strong></td><td style="color:#FCA311;">{pass_mark}%</td></tr>
+      <tr><td>&#x1F501; <strong>Attempts Allowed</strong></td><td style="color:#FCA311;">{MAX_RETAKES+1} (you are on attempt {attempt_n})</td></tr>
+    </table>
+    <hr style="border-color:rgba(252,163,17,0.4);margin:1.5rem 0;">
+    <h3 style="color:#FCA311;">&#x1F4DC; Rules</h3>
+    <ol style="color:#E5E5E5;line-height:2;">
+      <li><strong style="color:#FCA311;">Do not switch tabs or windows.</strong> You get {MAX_TAB_SWITCHES} warnings then auto-submit.</li>
+      <li><strong style="color:#FCA311;">Do not press PrintScreen or F12</strong> — detected and recorded.</li>
+      <li><strong style="color:#FCA311;">No copying or pasting</strong> during the exam.</li>
+      <li><strong style="color:#FCA311;">Exam auto-submits</strong> when the timer runs out.</li>
+      <li><strong style="color:#FCA311;">Progress saves</strong> automatically every 60 seconds — log back in to resume.</li>
+    </ol>
+    <hr style="border-color:rgba(252,163,17,0.4);margin:1.5rem 0;">
+    <p style="color:#FCA311;font-weight:700;font-size:1.1rem;">&#x2705; By clicking Start, you confirm you have read and agree to these rules.</p>
+    </div>
+    """, unsafe_allow_html=True)
     c1,c2,c3=st.columns([1,2,1])
     with c2:
         if st.button("🚀 I Understand — Start Exam",use_container_width=True):
@@ -463,31 +599,56 @@ elif st.session_state.page=="quiz":
     remaining=duration-elapsed
     if remaining<=0: st.session_state.page="result"; st.rerun()
     mins,secs=divmod(int(max(remaining,0)),60)
-    st.markdown(f"""<script>
-    (function(){{let t={int(remaining)};
-    function tick(){{if(t<=0){{window.location.href='?auto_submit=1';return;}}
-    const m=Math.floor(t/60).toString().padStart(2,'0');const s=(t%60).toString().padStart(2,'0');
-    const el=document.getElementById('lt');
-    if(el){{el.textContent='⏱️ '+m+':'+s;if(t<300)el.style.background='linear-gradient(135deg,#f093fb,#f5576c)';}}
-    const pr=document.getElementById('lp');if(pr)pr.style.width=(({duration}-t)/{duration}*100)+'%';
-    if(t===300)alert('⚠️ 5 minutes remaining!');t--;}}
-    tick();setInterval(tick,1000);}})();
-    </script>
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;
-        background:rgba(255,255,255,0.12);padding:1rem 1.5rem;border-radius:14px;">
+    # Timer JS — separate from HTML to prevent raw code display
+    timer_js = f"""<script>
+    (function(){{
+        let t={int(remaining)};
+        function tick(){{
+            if(t<=0){{window.location.href='?auto_submit=1';return;}}
+            const m=Math.floor(t/60).toString().padStart(2,'0');
+            const s=(t%60).toString().padStart(2,'0');
+            const el=document.getElementById('lt');
+            if(el){{
+                el.textContent='\u23f1 '+m+':'+s;
+                if(t<300) el.style.background='linear-gradient(135deg,#f5576c,#f093fb)';
+            }}
+            const pr=document.getElementById('lp');
+            if(pr) pr.style.width=(({duration}-t)/{duration}*100)+'%';
+            if(t===300) alert('\u26a0\ufe0f 5 minutes remaining!');
+            t--;
+        }}
+        tick();
+        setInterval(tick,1000);
+    }})();
+    </script>"""
+    st.markdown(timer_js, unsafe_allow_html=True)
+
+    course_name_display = course.get('course_name','Assessment')
+    student_display = st.session_state.student_name
+    attempt_display = f"Attempt {st.session_state.attempt_num} of {MAX_RETAKES+1}"
+    elapsed_pct = (elapsed/duration)*100
+
+    st.markdown(f"""
+    <div class="quiz-header">
         <div style="color:white;">
-            <h2 style="margin:0;color:white;">📝 {course.get('course_name','Assessment')}</h2>
-            <p style="margin:4px 0;opacity:0.85;">{st.session_state.student_name} &nbsp;|&nbsp; Attempt {st.session_state.attempt_num} of {MAX_RETAKES+1}</p>
+            <h2 style="margin:0;color:white;font-size:1.4rem;">&#x1F4DD; {course_name_display}</h2>
+            <p style="margin:4px 0;opacity:0.85;font-size:0.9rem;">{student_display} &nbsp;|&nbsp; {attempt_display}</p>
         </div>
-        <div id="lt" style="background:linear-gradient(135deg,#667eea,#764ba2);color:white;
-            padding:0.9rem 1.8rem;border-radius:12px;font-size:1.8rem;font-weight:800;
-            min-width:150px;text-align:center;box-shadow:0 8px 24px rgba(0,0,0,0.3);">
-            ⏱️ {mins:02d}:{secs:02d}</div></div>
-    <div style="width:100%;height:8px;background:rgba(255,255,255,0.2);border-radius:5px;overflow:hidden;margin-bottom:20px;">
-        <div id="lp" style="height:100%;background:linear-gradient(90deg,#a78bfa,#60a5fa);
-            width:{(elapsed/duration)*100:.1f}%;transition:width 1s linear;"></div></div>""",unsafe_allow_html=True)
+        <div id="lt" style="background:linear-gradient(135deg,#FCA311,#e8940a);
+            color:#14213D;padding:0.9rem 1.8rem;border-radius:12px;
+            font-size:1.8rem;font-weight:800;min-width:150px;text-align:center;
+            box-shadow:0 8px 24px rgba(0,0,0,0.3);">
+            &#x23f1; {mins:02d}:{secs:02d}
+        </div>
+    </div>
+    <div style="width:100%;height:8px;background:rgba(255,255,255,0.2);
+        border-radius:5px;overflow:hidden;margin-bottom:20px;">
+        <div id="lp" style="height:100%;background:linear-gradient(90deg,#FCA311,#ffd060);
+            width:{elapsed_pct:.1f}%;transition:width 1s linear;"></div>
+    </div>
+    """, unsafe_allow_html=True)
     total=len(st.session_state.questions)
-    answered=sum(1 for v in st.session_state.answers.values() if str(v).strip())
+    answered=sum(1 for v in st.session_state.answers.values() if v is not None and str(v).strip())
     st.write(f"**Progress: {answered}/{total} answered**")
     for i,q in enumerate(st.session_state.questions):
         st.markdown('<div class="question-card">',unsafe_allow_html=True)
@@ -502,7 +663,9 @@ elif st.session_state.page=="quiz":
                 help="This text area saves your code. The editor above lets you run it.")
             if ans: st.session_state.answers[key]=str(ans).strip()
         elif q["type"]=="short":
-            ans=st.text_input("Your answer:",value=current,key=key)
+            ans=st.text_input("Your answer:",value=current,key=key,
+                placeholder="Type your answer here...")
+            st.session_state.answers[key]=str(ans).strip()
         else:
             opts=q["options"]; idx=opts.index(current) if current in opts else None
             ans=st.radio("Select your answer:",opts,index=idx,key=key)
