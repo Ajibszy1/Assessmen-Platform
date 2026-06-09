@@ -200,6 +200,73 @@ def get_security_js():
         document.addEventListener('paste',e=>e.preventDefault());
     }})();</script>"""
 
+
+def get_code_editor_html(qkey, current_code=""):
+    safe = current_code.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+    html = """
+    <div style="background:#1e1e1e;border-radius:12px;padding:1rem;margin:0.5rem 0;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <span style="color:#58a6ff;font-weight:700;">🐍 Python Code Editor</span>
+        <div>
+          <button id="run-BTN" onclick="runCode('BTN')"
+            style="background:#238636;color:white;border:none;padding:6px 18px;border-radius:6px;cursor:pointer;font-size:0.85rem;margin-right:6px;">
+            ▶ Run
+          </button>
+          <button onclick="clearOut('BTN')"
+            style="background:#30363d;color:#ccc;border:none;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:0.85rem;">
+            Clear
+          </button>
+        </div>
+      </div>
+      <textarea id="code-BTN"
+        style="width:100%;min-height:130px;background:#1e1e1e;color:#d4d4d4;border:1px solid #30363d;
+               border-radius:8px;padding:10px;font-family:Courier New,monospace;font-size:0.88rem;
+               resize:vertical;tab-size:4;outline:none;box-sizing:border-box;"
+        placeholder="# Write your Python code here..." onkeydown="handleTab(event)">SAFECODE</textarea>
+      <div style="color:#8b949e;font-size:0.78rem;margin:6px 0 4px 2px;">Output:</div>
+      <div id="out-BTN" style="background:#0d1117;border-radius:8px;padding:10px;min-height:36px;
+           font-family:monospace;font-size:0.88rem;white-space:pre-wrap;color:#484f58;">
+        -- click Run to execute --
+      </div>
+    </div>
+    <script>
+    function handleTab(e){if(e.key==='Tab'){e.preventDefault();var t=e.target,s=t.selectionStart;t.value=t.value.substring(0,s)+'    '+t.value.substring(t.selectionEnd);t.selectionStart=t.selectionEnd=s+4;}}
+    function clearOut(k){var o=document.getElementById('out-'+k);o.style.color='#484f58';o.textContent='-- click Run to execute --';}
+    async function runCode(k){
+      var code=document.getElementById('code-'+k).value;
+      var out=document.getElementById('out-'+k);
+      out.style.color='#8b949e'; out.textContent='⏳ Running...';
+      if(!window._pyReady){
+        out.textContent='⏳ Loading Python engine (first run takes ~10 seconds)...';
+        if(!window._pyLoading){
+          window._pyLoading=true;
+          var s=document.createElement('script');
+          s.src='https://cdn.jsdelivr.net/pyodide/v0.24.1/full/pyodide.js';
+          s.onload=async function(){window._py=await loadPyodide();window._pyReady=true;_exec(k,code,out);};
+          document.head.appendChild(s);
+        }
+        return;
+      }
+      _exec(k,code,out);
+    }
+    async function _exec(k,code,out){
+      try{
+        window._py.runPython('import sys,io;sys.stdout=io.StringIO()');
+        window._py.runPython(code);
+        var result=window._py.runPython('sys.stdout.getvalue()');
+        window._py.runPython('sys.stdout=sys.__stdout__');
+        out.style.color='#3fb950'; out.textContent=result||'(no output)';
+      }catch(e){
+        try{window._py.runPython('sys.stdout=sys.__stdout__');}catch(x){}
+        out.style.color='#f85149'; out.textContent='Error: '+e.message;
+      }
+    }
+    </script>
+    """
+    html = html.replace("BTN", qkey).replace("SAFECODE", safe)
+    return html
+
+
 st.markdown("""
 <style>
     .stApp > header,.stAppHeader,[data-testid="stHeader"],[data-testid="stToolbar"],
@@ -227,6 +294,9 @@ st.markdown("""
     .lb-name{flex:1;font-weight:600;}
     .lb-score{font-size:1.1rem;font-weight:700;color:#667eea;}
     .lb-gold{background:linear-gradient(90deg,#fef9c3,#fde68a);}
+    .code-editor-wrap{background:#1e1e1e;border-radius:12px;padding:1rem;margin:0.5rem 0;}
+    .code-output{background:#0d1117;border-radius:8px;padding:1rem;margin-top:0.5rem;
+        font-family:monospace;color:#58a6ff;font-size:0.9rem;white-space:pre-wrap;}
     .lb-silver{background:linear-gradient(90deg,#f1f5f9,#e2e8f0);}
     .lb-bronze{background:linear-gradient(90deg,#fff7ed,#fed7aa);}
 </style>""", unsafe_allow_html=True)
@@ -425,12 +495,18 @@ elif st.session_state.page=="quiz":
         st.markdown(f"**Q{i+1} of {total}** {badge}")
         st.markdown(f"### {q['question']}")
         key=f"q_{i}"; current=st.session_state.answers.get(key,"")
-        if q["type"]=="short":
+        if q["type"]=="code":
+            st.markdown(get_code_editor_html(key, current), unsafe_allow_html=True)
+            ans=st.text_area("💾 Your code is also saved here:",
+                value=current, key=key, height=100,
+                help="This text area saves your code. The editor above lets you run it.")
+            if ans: st.session_state.answers[key]=str(ans).strip()
+        elif q["type"]=="short":
             ans=st.text_input("Your answer:",value=current,key=key)
         else:
             opts=q["options"]; idx=opts.index(current) if current in opts else None
             ans=st.radio("Select your answer:",opts,index=idx,key=key)
-        if ans: st.session_state.answers[key]=str(ans).strip()
+            if ans: st.session_state.answers[key]=str(ans).strip()
         st.markdown('</div>',unsafe_allow_html=True)
     if time.time()-st.session_state.last_save_time>60:
         try:
