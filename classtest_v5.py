@@ -202,68 +202,220 @@ def get_security_js():
 
 
 def get_code_editor_html(qkey, current_code=""):
-    safe = current_code.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
-    html = """
-    <div style="background:#1e1e1e;border-radius:12px;padding:1rem;margin:0.5rem 0;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-        <span style="color:#58a6ff;font-weight:700;">🐍 Python Code Editor</span>
-        <div>
-          <button id="run-BTN" onclick="runCode('BTN')"
-            style="background:#238636;color:white;border:none;padding:6px 18px;border-radius:6px;cursor:pointer;font-size:0.85rem;margin-right:6px;">
-            ▶ Run
-          </button>
-          <button onclick="clearOut('BTN')"
-            style="background:#30363d;color:#ccc;border:none;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:0.85rem;">
-            Clear
-          </button>
-        </div>
-      </div>
-      <textarea id="code-BTN"
-        style="width:100%;min-height:130px;background:#1e1e1e;color:#d4d4d4;border:1px solid #30363d;
-               border-radius:8px;padding:10px;font-family:Courier New,monospace;font-size:0.88rem;
-               resize:vertical;tab-size:4;outline:none;box-sizing:border-box;"
-        placeholder="# Write your Python code here..." onkeydown="handleTab(event)">SAFECODE</textarea>
-      <div style="color:#8b949e;font-size:0.78rem;margin:6px 0 4px 2px;">Output:</div>
-      <div id="out-BTN" style="background:#0d1117;border-radius:8px;padding:10px;min-height:36px;
-           font-family:monospace;font-size:0.88rem;white-space:pre-wrap;color:#484f58;">
-        -- click Run to execute --
-      </div>
-    </div>
-    <script>
-    function handleTab(e){if(e.key==='Tab'){e.preventDefault();var t=e.target,s=t.selectionStart;t.value=t.value.substring(0,s)+'    '+t.value.substring(t.selectionEnd);t.selectionStart=t.selectionEnd=s+4;}}
-    function clearOut(k){var o=document.getElementById('out-'+k);o.style.color='#484f58';o.textContent='-- click Run to execute --';}
-    async function runCode(k){
-      var code=document.getElementById('code-'+k).value;
-      var out=document.getElementById('out-'+k);
-      out.style.color='#8b949e'; out.textContent='⏳ Running...';
-      if(!window._pyReady){
-        out.textContent='⏳ Loading Python engine (first run takes ~10 seconds)...';
-        if(!window._pyLoading){
-          window._pyLoading=true;
-          var s=document.createElement('script');
-          s.src='https://cdn.jsdelivr.net/pyodide/v0.24.1/full/pyodide.js';
-          s.onload=async function(){window._py=await loadPyodide();window._pyReady=true;_exec(k,code,out);};
-          document.head.appendChild(s);
-        }
-        return;
-      }
-      _exec(k,code,out);
-    }
-    async function _exec(k,code,out){
-      try{
-        window._py.runPython('import sys,io;sys.stdout=io.StringIO()');
-        window._py.runPython(code);
-        var result=window._py.runPython('sys.stdout.getvalue()');
-        window._py.runPython('sys.stdout=sys.__stdout__');
-        out.style.color='#3fb950'; out.textContent=result||'(no output)';
-      }catch(e){
-        try{window._py.runPython('sys.stdout=sys.__stdout__');}catch(x){}
-        out.style.color='#f85149'; out.textContent='Error: '+e.message;
-      }
-    }
-    </script>
     """
-    html = html.replace("BTN", qkey).replace("SAFECODE", safe)
+    Full-featured Python code editor using CodeMirror 5 (syntax highlighting)
+    + Pyodide (real Python runtime in browser).
+    """
+    # JSON-encode the code so it's safe to embed in JS
+    import json as _json
+    safe_code = _json.dumps(current_code)
+
+    html = f"""
+<div id="wrap-{qkey}" style="border:2px solid #FCA311;border-radius:12px;overflow:hidden;margin:0.5rem 0;background:#1e1e1e;">
+
+  <!-- Toolbar -->
+  <div style="display:flex;justify-content:space-between;align-items:center;
+              padding:8px 14px;background:#14213D;border-bottom:1px solid #FCA311;">
+    <span style="color:#FCA311;font-weight:700;font-size:0.9rem;">&#x1F40D; Python Editor</span>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <span id="status-{qkey}" style="color:#8b949e;font-size:0.78rem;"></span>
+      <button onclick="runCode_{qkey}()"
+        style="background:#238636;color:white;border:none;padding:5px 16px;
+               border-radius:6px;cursor:pointer;font-size:0.85rem;font-weight:700;">
+        &#x25B6; Run
+      </button>
+      <button onclick="clearEditor_{qkey}()"
+        style="background:#30363d;color:#ccc;border:none;padding:5px 12px;
+               border-radius:6px;cursor:pointer;font-size:0.85rem;">
+        Clear
+      </button>
+    </div>
+  </div>
+
+  <!-- CodeMirror editor container -->
+  <div id="cm-{qkey}" style="font-size:14px;line-height:1.5;"></div>
+
+  <!-- Output panel -->
+  <div style="background:#0d1117;border-top:1px solid #30363d;padding:10px 14px;">
+    <div style="color:#8b949e;font-size:0.75rem;margin-bottom:6px;">&#x1F4E4; Output</div>
+    <div id="out-{qkey}"
+      style="font-family:'Fira Code','Courier New',monospace;font-size:0.88rem;
+             min-height:40px;white-space:pre-wrap;color:#484f58;">
+      -- Click Run to execute --
+    </div>
+  </div>
+</div>
+
+<!-- Load CodeMirror 5 once globally -->
+<script>
+(function(){{
+  if(window._cmLoaded) return;
+  window._cmLoaded = true;
+
+  // CodeMirror CSS
+  var cmCSS = document.createElement('link');
+  cmCSS.rel='stylesheet';
+  cmCSS.href='https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css';
+  document.head.appendChild(cmCSS);
+
+  // Theme CSS
+  var themeCSS = document.createElement('link');
+  themeCSS.rel='stylesheet';
+  themeCSS.href='https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/dracula.min.css';
+  document.head.appendChild(themeCSS);
+
+  // Extra CSS for editor height
+  var style = document.createElement('style');
+  style.textContent = '.CodeMirror{{height:160px;font-family:"Fira Code","Courier New",monospace;font-size:14px;}} .CodeMirror-scroll{{min-height:160px;}}';
+  document.head.appendChild(style);
+
+  // CodeMirror JS
+  function loadScript(src, cb){{
+    var s=document.createElement('script'); s.src=src;
+    s.onload=cb; document.head.appendChild(s);
+  }}
+
+  loadScript(
+    'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js',
+    function(){{
+      loadScript(
+        'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/python/python.min.js',
+        function(){{
+          loadScript(
+            'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/matchbrackets.min.js',
+            function(){{
+              loadScript(
+                'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/closebrackets.min.js',
+                function(){{ window._cmReady = true; window.dispatchEvent(new Event('cmReady')); }}
+              );
+            }}
+          );
+        }}
+      );
+    }}
+  );
+}})();
+</script>
+
+<!-- Init this specific editor instance -->
+<script>
+(function(){{
+  var KEY = '{qkey}';
+  var INITIAL = {safe_code};
+  var cmInstance = null;
+
+  function initEditor(){{
+    if(cmInstance) return;
+    var container = document.getElementById('cm-' + KEY);
+    if(!container || !window.CodeMirror) return;
+    cmInstance = CodeMirror(container, {{
+      value: INITIAL,
+      mode: 'python',
+      theme: 'dracula',
+      lineNumbers: true,
+      matchBrackets: true,
+      autoCloseBrackets: true,
+      indentUnit: 4,
+      tabSize: 4,
+      indentWithTabs: false,
+      lineWrapping: true,
+      extraKeys: {{
+        'Tab': function(cm){{ cm.replaceSelection('    '); }},
+        'Ctrl-Enter': function(){{ runCode_{qkey}(); }}
+      }}
+    }});
+    cmInstance.on('change', function(){{
+      // Keep hidden textarea in sync for Streamlit saving
+      var ta = document.querySelector('textarea[data-key="' + KEY + '"]');
+      if(ta){{
+        var nv = cmInstance.getValue();
+        var setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set;
+        setter.call(ta, nv);
+        ta.dispatchEvent(new Event('input', {{bubbles:true}}));
+      }}
+    }});
+    window['_cm_' + KEY] = cmInstance;
+  }}
+
+  if(window._cmReady){{ setTimeout(initEditor, 100); }}
+  else {{ window.addEventListener('cmReady', function(){{ setTimeout(initEditor, 100); }}); }}
+  // Also try after DOM settles
+  setTimeout(initEditor, 800);
+  setTimeout(initEditor, 2000);
+
+  // Run code function
+  window['runCode_' + KEY] = async function(){{
+    var code = cmInstance ? cmInstance.getValue() : INITIAL;
+    var out = document.getElementById('out-' + KEY);
+    var status = document.getElementById('status-' + KEY);
+    out.style.color = '#8b949e';
+    out.textContent = '\u23f3 Running...';
+    status.textContent = '';
+
+    if(!window._pyReady){{
+      out.textContent = '\u23f3 Loading Python runtime... (first run ~15 sec)';
+      if(!window._pyLoading){{
+        window._pyLoading = true;
+        var s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js';
+        s.onload = async function(){{
+          try{{
+            status.textContent = 'Loading...';
+            window._py = await loadPyodide({{
+              indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.25.1/full/'
+            }});
+            window._pyReady = true;
+            status.textContent = '\u2705 Ready';
+            await execCode_{qkey}(code, out);
+          }} catch(e){{
+            out.style.color='#f85149';
+            out.textContent = 'Failed to load Python: ' + e.message;
+          }}
+        }};
+        document.head.appendChild(s);
+      }}
+      return;
+    }}
+    await execCode_{qkey}(code, out);
+  }};
+
+  window['execCode_' + KEY] = async function(code, out){{
+    try{{
+      await window._py.runPythonAsync(`
+import sys, io
+_buf = io.StringIO()
+sys.stdout = _buf
+sys.stderr = _buf
+`);
+      try{{
+        await window._py.runPythonAsync(code);
+      }} catch(e2){{
+        await window._py.runPythonAsync(`sys.stdout.write("Error: " + str(repr(""" + JSON.stringify(e2.message) + """)))`);
+      }}
+      var result = await window._py.runPythonAsync(`
+sys.stdout = sys.__stdout__
+sys.stderr = sys.__stderr__
+_buf.getvalue()
+`);
+      out.style.color = result.startsWith('Error') ? '#f85149' : '#3fb950';
+      out.textContent = result.trim() || '(no output)';
+    }} catch(e){{
+      try{{ await window._py.runPythonAsync('sys.stdout=sys.__stdout__;sys.stderr=sys.__stderr__'); }}catch(x){{}}
+      out.style.color = '#f85149';
+      out.textContent = 'Runtime error: ' + e.message;
+    }}
+  }};
+
+  window['clearEditor_' + KEY] = function(){{
+    if(cmInstance) cmInstance.setValue('');
+    var out = document.getElementById('out-' + KEY);
+    out.style.color = '#484f58';
+    out.textContent = '-- Click Run to execute --';
+  }};
+
+}})();
+</script>
+"""
     return html
 
 
@@ -516,8 +668,13 @@ if st.session_state.page=="login":
         with st.spinner("Loading questions..."):
             q_df=db_all("questions",{"course_id":course_id})
         if q_df.empty: st.error("⛔ No questions found for this course."); st.stop()
-        if q_count>0 and len(q_df)>q_count: q_df=q_df.sample(n=q_count).reset_index(drop=True)
-        else: q_df=q_df.sample(frac=1).reset_index(drop=True)
+        # Seed from email+attempt_num so each student gets different random questions
+        import hashlib as _hs
+        _seed = int(_hs.md5(f"{email}{attempt_num}".encode()).hexdigest()[:8], 16)
+        if q_count>0 and len(q_df)>q_count:
+            q_df=q_df.sample(n=q_count, random_state=_seed).reset_index(drop=True)
+        else:
+            q_df=q_df.sample(frac=1, random_state=_seed).reset_index(drop=True)
         questions=[]
         for _,row in q_df.iterrows():
             qt=str(row.get("type","mcq")).strip().lower(); opts=[]
@@ -544,7 +701,7 @@ elif st.session_state.page=="instructions":
     attempt_n=st.session_state.attempt_num
     st.markdown('<div class="exam-container">',unsafe_allow_html=True)
     st.title(f"📋 {course.get('course_name','Exam')} — Instructions")
-    if attempt_n>1: st.warning(f"⚠️ This is your **Attempt {attempt_n}** of {MAX_RETAKES+1}.")
+
     st.markdown(f"""
     <div class="instruction-box">
     <h3 style="color:#FCA311;margin-top:0;">&#x1F4CC; Before You Begin</h3>
@@ -552,7 +709,7 @@ elif st.session_state.page=="instructions":
       <tr><td>&#x23F1; <strong>Duration</strong></td><td style="color:#FCA311;">{duration} minutes</td></tr>
       <tr><td>&#x2753; <strong>Questions</strong></td><td style="color:#FCA311;">{total_q} questions</td></tr>
       <tr><td>&#x1F3AF; <strong>Pass Mark</strong></td><td style="color:#FCA311;">{pass_mark}%</td></tr>
-      <tr><td>&#x1F501; <strong>Attempts Allowed</strong></td><td style="color:#FCA311;">{MAX_RETAKES+1} (you are on attempt {attempt_n})</td></tr>
+
     </table>
     <hr style="border-color:rgba(252,163,17,0.4);margin:1.5rem 0;">
     <h3 style="color:#FCA311;">&#x1F4DC; Rules</h3>
@@ -625,14 +782,13 @@ elif st.session_state.page=="quiz":
 
     course_name_display = course.get('course_name','Assessment')
     student_display = st.session_state.student_name
-    attempt_display = f"Attempt {st.session_state.attempt_num} of {MAX_RETAKES+1}"
     elapsed_pct = (elapsed/duration)*100
 
     st.markdown(f"""
     <div class="quiz-header">
         <div style="color:white;">
             <h2 style="margin:0;color:white;font-size:1.4rem;">&#x1F4DD; {course_name_display}</h2>
-            <p style="margin:4px 0;opacity:0.85;font-size:0.9rem;">{student_display} &nbsp;|&nbsp; {attempt_display}</p>
+            <p style="margin:4px 0;opacity:0.85;font-size:0.9rem;">{student_display}</p>
         </div>
         <div id="lt" style="background:linear-gradient(135deg,#FCA311,#e8940a);
             color:#14213D;padding:0.9rem 1.8rem;border-radius:12px;
@@ -649,19 +805,25 @@ elif st.session_state.page=="quiz":
     """, unsafe_allow_html=True)
     total=len(st.session_state.questions)
     answered=sum(1 for v in st.session_state.answers.values() if v is not None and str(v).strip())
-    st.write(f"**Progress: {answered}/{total} answered**")
     for i,q in enumerate(st.session_state.questions):
         st.markdown('<div class="question-card">',unsafe_allow_html=True)
-        badge={"easy":"🟢","medium":"🟡","hard":"🔴"}.get(q.get("difficulty",""),"")
-        st.markdown(f"**Q{i+1} of {total}** {badge}")
+        st.markdown(f"**Question {i+1}**")
         st.markdown(f"### {q['question']}")
         key=f"q_{i}"; current=st.session_state.answers.get(key,"")
         if q["type"]=="code":
             st.markdown(get_code_editor_html(key, current), unsafe_allow_html=True)
-            ans=st.text_area("💾 Your code is also saved here:",
-                value=current, key=key, height=100,
-                help="This text area saves your code. The editor above lets you run it.")
-            if ans: st.session_state.answers[key]=str(ans).strip()
+            ans=st.text_area(
+                "💾 Backup — also type/paste your code here (saved every 60s):",
+                value=current, key=key, height=120,
+                help="Type your code here as backup. The editor above has syntax highlighting and Run button.")
+            # inject data-key so CodeMirror can sync back to Streamlit
+            st.markdown(f"""<script>
+            (function(){{
+                var ta=document.querySelector('textarea[aria-label="💾 Backup — also type/paste your code here (saved every 60s):"]');
+                if(ta) ta.setAttribute('data-key','{key}');
+            }})();
+            </script>""", unsafe_allow_html=True)
+            if ans is not None: st.session_state.answers[key]=str(ans).strip()
         elif q["type"]=="short":
             ans=st.text_input("Your answer:",value=current,key=key,
                 placeholder="Type your answer here...")
@@ -710,9 +872,7 @@ elif st.session_state.page=="result":
     st.markdown(f'<div class="score-circle" style="background:{color};">{percentage:.0f}%</div>',unsafe_allow_html=True)
     st.markdown(f"### {correct} / {total} Correct")
     st.markdown(f"**Result:** {'✅ Pass' if passed else '❌ Fail'}")
-    remaining_attempts=MAX_RETAKES+1-st.session_state.attempt_num
-    if not passed and remaining_attempts>0:
-        st.info(f"💡 You have **{remaining_attempts}** retake(s) available. Ask your instructor.")
+
     if not st.session_state.result_saved:
         rd={"name":st.session_state.student_name,"email":st.session_state.student_email,
             "course_id":course_id,"course_name":course.get("course_name",""),
