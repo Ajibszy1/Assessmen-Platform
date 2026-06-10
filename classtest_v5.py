@@ -202,208 +202,180 @@ def get_security_js():
 
 
 def get_code_editor_html(qkey, current_code=""):
-    """CodeMirror 5 editor with Pyodide Python runner. No f-string/JS conflicts."""
+    """
+    Working Python code editor for Streamlit.
+    Uses a plain contenteditable div styled like an IDE — works inside Streamlit iframes.
+    Pyodide runs the code. No CodeMirror (blocked by Streamlit iframe sandboxing).
+    """
     import json as _j
-    init_code = _j.dumps(current_code)   # safely JSON-encode for JS
+    init_code = _j.dumps(current_code)
 
-    # Build JS and HTML as plain strings — NO f-string, use .format() carefully
-    # We use __QKEY__ as a placeholder to avoid any brace issues
-    TEMPLATE = """
-<div id="wrap-__QKEY__" style="border:2px solid #FCA311;border-radius:12px;
-     overflow:hidden;margin:0.5rem 0 1rem 0;background:#1e1e1e;">
+    TEMPLATE = """<div style="border:2px solid #FCA311;border-radius:12px;
+     overflow:hidden;margin:0.5rem 0 1rem 0;font-family:'Courier New',monospace;">
 
   <!-- Toolbar -->
   <div style="display:flex;justify-content:space-between;align-items:center;
        padding:8px 14px;background:#14213D;border-bottom:2px solid #FCA311;">
     <span style="color:#FCA311;font-weight:700;font-size:0.9rem;">
-      &#x1F40D;&nbsp;Python Editor &nbsp;
-      <span style="color:#aaa;font-weight:400;font-size:0.78rem;">
-        Ctrl+Enter to run
+      &#x1F40D; Python Editor
+      <span style="color:#888;font-weight:400;font-size:0.75rem;margin-left:8px;">
+        Tab = 4 spaces &nbsp;|&nbsp; Ctrl+Enter = Run
       </span>
     </span>
     <div style="display:flex;gap:8px;align-items:center;">
-      <span id="py-status-__QKEY__" style="color:#8b949e;font-size:0.78rem;"></span>
-      <button id="runbtn-__QKEY__"
-        style="background:#238636;color:white;border:none;padding:5px 18px;
-               border-radius:6px;cursor:pointer;font-size:0.85rem;font-weight:700;">
+      <span id="pystatus_QKEY" style="color:#8b949e;font-size:0.78rem;"></span>
+      <button id="runbtn_QKEY"
+        style="background:#238636;color:white;border:none;padding:6px 18px;
+               border-radius:6px;cursor:pointer;font-size:0.85rem;font-weight:700;
+               letter-spacing:0.5px;">
         &#x25B6; Run
       </button>
-      <button id="clearbtn-__QKEY__"
-        style="background:#30363d;color:#aaa;border:none;padding:5px 12px;
+      <button id="clearbtn_QKEY"
+        style="background:#333;color:#aaa;border:1px solid #555;padding:6px 12px;
                border-radius:6px;cursor:pointer;font-size:0.85rem;">
         Clear
       </button>
     </div>
   </div>
 
-  <!-- CodeMirror mount point -->
-  <div id="cm-mount-__QKEY__"></div>
+  <!-- Code input area — plain textarea, fully editable -->
+  <div style="background:#1e1e1e;position:relative;">
+    <textarea id="codearea_QKEY"
+      spellcheck="false"
+      autocorrect="off"
+      autocapitalize="off"
+      autocomplete="off"
+      placeholder="# Write your Python code here..."
+      style="width:100%;min-height:160px;background:#1e1e1e;color:#d4d4d4;
+             border:none;outline:none;padding:14px 16px;
+             font-family:'Courier New',Courier,monospace;font-size:14px;
+             line-height:1.6;resize:vertical;tab-size:4;
+             box-sizing:border-box;display:block;
+             caret-color:#FCA311;">INIT_PLACEHOLDER</textarea>
+  </div>
 
   <!-- Output -->
-  <div style="background:#0d1117;border-top:1px solid #30363d;padding:10px 14px;">
-    <div style="color:#8b949e;font-size:0.75rem;margin-bottom:4px;">Output:</div>
-    <pre id="py-out-__QKEY__"
-      style="font-family:Fira Code,Courier New,monospace;font-size:0.88rem;
-             min-height:36px;margin:0;white-space:pre-wrap;color:#484f58;">
--- Click Run or press Ctrl+Enter --</pre>
+  <div style="background:#0d1117;border-top:1px solid #333;padding:10px 16px;">
+    <div style="color:#8b949e;font-size:0.75rem;margin-bottom:6px;font-family:sans-serif;">
+      &#x1F4E4; Output:
+    </div>
+    <pre id="pyout_QKEY"
+      style="font-family:'Courier New',monospace;font-size:0.88rem;
+             min-height:40px;margin:0;white-space:pre-wrap;
+             color:#484f58;line-height:1.5;">-- Click Run or Ctrl+Enter --</pre>
   </div>
 </div>
 
-<!-- ── Load CodeMirror assets once ── -->
-<link id="cm-css-link" rel="stylesheet"
-  href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
-<link rel="stylesheet"
-  href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/dracula.min.css">
-<style>
-  .CodeMirror { height:160px !important; font-size:14px !important;
-    font-family: "Fira Code","Courier New",monospace !important; }
-  .CodeMirror-scroll { min-height:160px; }
-</style>
-
 <script>
 (function(){
-  var QKEY = "__QKEY__";
-  var INIT_CODE = __INIT_CODE__;
+  var Q = "QKEY";
+  var ta    = document.getElementById("codearea_" + Q);
+  var outEl = document.getElementById("pyout_"   + Q);
+  var stEl  = document.getElementById("pystatus_"+ Q);
+  var runBtn= document.getElementById("runbtn_"  + Q);
+  var clrBtn= document.getElementById("clearbtn_"+ Q);
 
-  /* ── 1. Load CodeMirror chain ── */
-  function loadScript(src, cb){
-    var s=document.createElement("script"); s.src=src;
-    s.onload=cb; document.head.appendChild(s);
+  /* ── Tab key → 4 spaces ── */
+  ta.addEventListener("keydown", function(e){
+    if(e.key === "Tab"){
+      e.preventDefault();
+      var s = ta.selectionStart, end = ta.selectionEnd;
+      ta.value = ta.value.substring(0,s) + "    " + ta.value.substring(end);
+      ta.selectionStart = ta.selectionEnd = s + 4;
+    }
+    if((e.ctrlKey || e.metaKey) && e.key === "Enter"){
+      e.preventDefault();
+      runCode();
+    }
+  });
+
+  /* ── Output helpers ── */
+  function setOut(txt, isErr){
+    outEl.textContent = txt;
+    outEl.style.color = isErr ? "#f85149" : "#3fb950";
   }
 
-  function setupEditor(){
-    var mount = document.getElementById("cm-mount-"+QKEY);
-    if(!mount || window["_cm_"+QKEY]) return;
-
-    var cm = CodeMirror(mount, {
-      value: INIT_CODE,
-      mode: "python",
-      theme: "dracula",
-      lineNumbers: true,
-      matchBrackets: true,
-      autoCloseBrackets: true,
-      indentUnit: 4,
-      tabSize: 4,
-      lineWrapping: true,
-      extraKeys: {
-        "Tab": function(c){ c.replaceSelection("    "); },
-        "Ctrl-Enter": function(){ runCode(); }
-      }
-    });
-    window["_cm_"+QKEY] = cm;
-  }
-
-  function initChain(){
-    if(window.CodeMirror){ setupEditor(); return; }
-    loadScript(
-      "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js",
-      function(){
-        loadScript(
-          "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/python/python.min.js",
-          function(){
-            loadScript(
-              "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/matchbrackets.min.js",
-              function(){
-                loadScript(
-                  "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/closebrackets.min.js",
-                  function(){ setupEditor(); }
-                );
-              }
-            );
-          }
+  /* ── Execute code ── */
+  async function execCode(code){
+    var py = window._AP_pyodide;
+    try{
+      await py.runPythonAsync(
+        "import sys, io\n_b=io.StringIO()\nsys.stdout=_b\nsys.stderr=_b"
+      );
+      try{
+        await py.runPythonAsync(code);
+      }catch(err){
+        await py.runPythonAsync(
+          "_b.write('\\nError: '+" +
+          JSON.stringify(String(err.message)) + ")"
         );
       }
-    );
-  }
-
-  /* try multiple times to handle Streamlit re-renders */
-  setTimeout(initChain, 200);
-  setTimeout(initChain, 1000);
-  setTimeout(initChain, 3000);
-
-  /* ── 2. Run button ── */
-  function getCode(){
-    var cm = window["_cm_"+QKEY];
-    if(cm) return cm.getValue();
-    var ta = document.getElementById("cm-mount-"+QKEY);
-    return ta ? ta.textContent : "";
-  }
-
-  function setOut(text, isErr){
-    var el = document.getElementById("py-out-"+QKEY);
-    if(!el) return;
-    el.textContent = text;
-    el.style.color = isErr ? "#f85149" : "#3fb950";
-  }
-
-  async function execPy(code){
-    try{
-      var py = window._pyodide;
-      py.runPython("import sys,io; _buf=io.StringIO(); sys.stdout=_buf; sys.stderr=_buf");
-      try{
-        py.runPython(code);
-      }catch(e){
-        py.runPython("sys.stdout.write('Error: '+str(repr(Exception())))");
-        py.runPython("sys.stdout.write('" + e.message.replace(/'/g,"\'").replace(/\n/g,"\\n") + "')");
-      }
-      var out = py.runPython("sys.stdout=sys.__stdout__; sys.stderr=sys.__stderr__; _buf.getvalue()");
-      setOut(out||"(no output)", out.startsWith("Error"));
+      var out = await py.runPythonAsync(
+        "sys.stdout=sys.__stdout__\nsys.stderr=sys.__stderr__\n_b.getvalue()"
+      );
+      setOut(out.trim() || "(no output)", out.includes("Error:"));
     }catch(e){
-      try{ window._pyodide.runPython("sys.stdout=sys.__stdout__;sys.stderr=sys.__stderr__"); }catch(x){}
-      setOut("Runtime error: "+e.message, true);
+      try{
+        await py.runPythonAsync("sys.stdout=sys.__stdout__;sys.stderr=sys.__stderr__");
+      }catch(x){}
+      setOut("Runtime error: " + e.message, true);
     }
   }
 
+  /* ── Run button ── */
   function runCode(){
-    var code = getCode();
-    var statusEl = document.getElementById("py-status-"+QKEY);
-    setOut("Running...", false);
-    document.getElementById("py-out-"+QKEY).style.color="#8b949e";
+    var code = ta.value;
+    if(!code.trim()){ setOut("(no code to run)", false); outEl.style.color="#888"; return; }
 
-    if(window._pyodide){
-      execPy(code); return;
+    if(window._AP_pyodide){
+      outEl.style.color="#8b949e"; outEl.textContent="Running...";
+      execCode(code); return;
     }
-    /* Load Pyodide */
-    setOut("Loading Python runtime... (10-20 sec first time)", false);
-    if(window._pyLoadStarted){ return; }
-    window._pyLoadStarted = true;
-    if(statusEl) statusEl.textContent = "Loading...";
-    loadScript(
-      "https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js",
-      async function(){
-        try{
-          window._pyodide = await loadPyodide({
-            indexURL:"https://cdn.jsdelivr.net/pyodide/v0.25.1/full/"
-          });
-          if(statusEl) statusEl.textContent = "Ready";
-          execPy(code);
-        }catch(e){
-          setOut("Failed to load Python: "+e.message, true);
-          window._pyLoadStarted = false;
-        }
+
+    outEl.style.color="#8b949e";
+    outEl.textContent = "Loading Python runtime... (first run ~15s, please wait)";
+    if(stEl) stEl.textContent = "Loading...";
+
+    if(window._AP_pyLoading){ return; }
+    window._AP_pyLoading = true;
+
+    var s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js";
+    s.onload = async function(){
+      try{
+        window._AP_pyodide = await loadPyodide({
+          indexURL: "https://cdn.jsdelivr.net/pyodide/v0.25.1/full/"
+        });
+        if(stEl) stEl.textContent = "\u2705 Ready";
+        outEl.style.color="#8b949e"; outEl.textContent="Running...";
+        execCode(code);
+      }catch(e){
+        setOut("Failed to load Python: " + e.message, true);
+        window._AP_pyLoading = false;
+        if(stEl) stEl.textContent = "";
       }
-    );
+    };
+    s.onerror = function(){
+      setOut("Network error: could not load Python runtime.", true);
+      window._AP_pyLoading = false;
+    };
+    document.head.appendChild(s);
   }
 
-  /* attach buttons after DOM ready */
-  function attachButtons(){
-    var rb = document.getElementById("runbtn-"+QKEY);
-    var cb = document.getElementById("clearbtn-"+QKEY);
-    if(rb) rb.onclick = runCode;
-    if(cb) cb.onclick = function(){
-      var cm=window["_cm_"+QKEY]; if(cm) cm.setValue("");
-      setOut("-- Click Run or press Ctrl+Enter --", false);
-      document.getElementById("py-out-"+QKEY).style.color="#484f58";
-    };
-  }
-  setTimeout(attachButtons, 500);
-  setTimeout(attachButtons, 1500);
+  if(runBtn) runBtn.onclick = runCode;
+  if(clrBtn) clrBtn.onclick = function(){
+    ta.value = "";
+    outEl.textContent = "-- Click Run or Ctrl+Enter --";
+    outEl.style.color = "#484f58";
+  };
 
 })();
-</script>
-"""
-    # Replace placeholders — safe, no f-string brace issues
-    html = TEMPLATE.replace("__QKEY__", qkey).replace("__INIT_CODE__", init_code)
+</script>"""
+
+    # Replace QKEY placeholder and insert initial code safely
+    import html as _html
+    safe_init = _html.escape(current_code) if current_code else ""
+    html = TEMPLATE.replace("QKEY", qkey).replace("INIT_PLACEHOLDER", safe_init)
     return html
 
 
