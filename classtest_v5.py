@@ -202,221 +202,210 @@ def get_security_js():
 
 
 def get_code_editor_html(qkey, current_code=""):
-    """
-    Full-featured Python code editor using CodeMirror 5 (syntax highlighting)
-    + Pyodide (real Python runtime in browser).
-    """
-    # JSON-encode the code so it's safe to embed in JS
-    import json as _json
-    safe_code = _json.dumps(current_code)
+    """CodeMirror 5 editor with Pyodide Python runner. No f-string/JS conflicts."""
+    import json as _j
+    init_code = _j.dumps(current_code)   # safely JSON-encode for JS
 
-    html = f"""
-<div id="wrap-{qkey}" style="border:2px solid #FCA311;border-radius:12px;overflow:hidden;margin:0.5rem 0;background:#1e1e1e;">
+    # Build JS and HTML as plain strings — NO f-string, use .format() carefully
+    # We use __QKEY__ as a placeholder to avoid any brace issues
+    TEMPLATE = """
+<div id="wrap-__QKEY__" style="border:2px solid #FCA311;border-radius:12px;
+     overflow:hidden;margin:0.5rem 0 1rem 0;background:#1e1e1e;">
 
   <!-- Toolbar -->
   <div style="display:flex;justify-content:space-between;align-items:center;
-              padding:8px 14px;background:#14213D;border-bottom:1px solid #FCA311;">
-    <span style="color:#FCA311;font-weight:700;font-size:0.9rem;">&#x1F40D; Python Editor</span>
+       padding:8px 14px;background:#14213D;border-bottom:2px solid #FCA311;">
+    <span style="color:#FCA311;font-weight:700;font-size:0.9rem;">
+      &#x1F40D;&nbsp;Python Editor &nbsp;
+      <span style="color:#aaa;font-weight:400;font-size:0.78rem;">
+        Ctrl+Enter to run
+      </span>
+    </span>
     <div style="display:flex;gap:8px;align-items:center;">
-      <span id="status-{qkey}" style="color:#8b949e;font-size:0.78rem;"></span>
-      <button onclick="runCode_{qkey}()"
-        style="background:#238636;color:white;border:none;padding:5px 16px;
+      <span id="py-status-__QKEY__" style="color:#8b949e;font-size:0.78rem;"></span>
+      <button id="runbtn-__QKEY__"
+        style="background:#238636;color:white;border:none;padding:5px 18px;
                border-radius:6px;cursor:pointer;font-size:0.85rem;font-weight:700;">
         &#x25B6; Run
       </button>
-      <button onclick="clearEditor_{qkey}()"
-        style="background:#30363d;color:#ccc;border:none;padding:5px 12px;
+      <button id="clearbtn-__QKEY__"
+        style="background:#30363d;color:#aaa;border:none;padding:5px 12px;
                border-radius:6px;cursor:pointer;font-size:0.85rem;">
         Clear
       </button>
     </div>
   </div>
 
-  <!-- CodeMirror editor container -->
-  <div id="cm-{qkey}" style="font-size:14px;line-height:1.5;"></div>
+  <!-- CodeMirror mount point -->
+  <div id="cm-mount-__QKEY__"></div>
 
-  <!-- Output panel -->
+  <!-- Output -->
   <div style="background:#0d1117;border-top:1px solid #30363d;padding:10px 14px;">
-    <div style="color:#8b949e;font-size:0.75rem;margin-bottom:6px;">&#x1F4E4; Output</div>
-    <div id="out-{qkey}"
-      style="font-family:'Fira Code','Courier New',monospace;font-size:0.88rem;
-             min-height:40px;white-space:pre-wrap;color:#484f58;">
-      -- Click Run to execute --
-    </div>
+    <div style="color:#8b949e;font-size:0.75rem;margin-bottom:4px;">Output:</div>
+    <pre id="py-out-__QKEY__"
+      style="font-family:Fira Code,Courier New,monospace;font-size:0.88rem;
+             min-height:36px;margin:0;white-space:pre-wrap;color:#484f58;">
+-- Click Run or press Ctrl+Enter --</pre>
   </div>
 </div>
 
-<!-- Load CodeMirror 5 once globally -->
+<!-- ── Load CodeMirror assets once ── -->
+<link id="cm-css-link" rel="stylesheet"
+  href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<link rel="stylesheet"
+  href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/dracula.min.css">
+<style>
+  .CodeMirror { height:160px !important; font-size:14px !important;
+    font-family: "Fira Code","Courier New",monospace !important; }
+  .CodeMirror-scroll { min-height:160px; }
+</style>
+
 <script>
-(function(){{
-  if(window._cmLoaded) return;
-  window._cmLoaded = true;
+(function(){
+  var QKEY = "__QKEY__";
+  var INIT_CODE = __INIT_CODE__;
 
-  // CodeMirror CSS
-  var cmCSS = document.createElement('link');
-  cmCSS.rel='stylesheet';
-  cmCSS.href='https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css';
-  document.head.appendChild(cmCSS);
-
-  // Theme CSS
-  var themeCSS = document.createElement('link');
-  themeCSS.rel='stylesheet';
-  themeCSS.href='https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/dracula.min.css';
-  document.head.appendChild(themeCSS);
-
-  // Extra CSS for editor height
-  var style = document.createElement('style');
-  style.textContent = '.CodeMirror{{height:160px;font-family:"Fira Code","Courier New",monospace;font-size:14px;}} .CodeMirror-scroll{{min-height:160px;}}';
-  document.head.appendChild(style);
-
-  // CodeMirror JS
-  function loadScript(src, cb){{
-    var s=document.createElement('script'); s.src=src;
+  /* ── 1. Load CodeMirror chain ── */
+  function loadScript(src, cb){
+    var s=document.createElement("script"); s.src=src;
     s.onload=cb; document.head.appendChild(s);
-  }}
+  }
 
-  loadScript(
-    'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js',
-    function(){{
-      loadScript(
-        'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/python/python.min.js',
-        function(){{
-          loadScript(
-            'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/matchbrackets.min.js',
-            function(){{
-              loadScript(
-                'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/closebrackets.min.js',
-                function(){{ window._cmReady = true; window.dispatchEvent(new Event('cmReady')); }}
-              );
-            }}
-          );
-        }}
-      );
-    }}
-  );
-}})();
-</script>
+  function setupEditor(){
+    var mount = document.getElementById("cm-mount-"+QKEY);
+    if(!mount || window["_cm_"+QKEY]) return;
 
-<!-- Init this specific editor instance -->
-<script>
-(function(){{
-  var KEY = '{qkey}';
-  var INITIAL = {safe_code};
-  var cmInstance = null;
-
-  function initEditor(){{
-    if(cmInstance) return;
-    var container = document.getElementById('cm-' + KEY);
-    if(!container || !window.CodeMirror) return;
-    cmInstance = CodeMirror(container, {{
-      value: INITIAL,
-      mode: 'python',
-      theme: 'dracula',
+    var cm = CodeMirror(mount, {
+      value: INIT_CODE,
+      mode: "python",
+      theme: "dracula",
       lineNumbers: true,
       matchBrackets: true,
       autoCloseBrackets: true,
       indentUnit: 4,
       tabSize: 4,
-      indentWithTabs: false,
       lineWrapping: true,
-      extraKeys: {{
-        'Tab': function(cm){{ cm.replaceSelection('    '); }},
-        'Ctrl-Enter': function(){{ runCode_{qkey}(); }}
-      }}
-    }});
-    cmInstance.on('change', function(){{
-      // Keep hidden textarea in sync for Streamlit saving
-      var ta = document.querySelector('textarea[data-key="' + KEY + '"]');
-      if(ta){{
-        var nv = cmInstance.getValue();
-        var setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set;
-        setter.call(ta, nv);
-        ta.dispatchEvent(new Event('input', {{bubbles:true}}));
-      }}
-    }});
-    window['_cm_' + KEY] = cmInstance;
-  }}
+      extraKeys: {
+        "Tab": function(c){ c.replaceSelection("    "); },
+        "Ctrl-Enter": function(){ runCode(); }
+      }
+    });
+    window["_cm_"+QKEY] = cm;
+  }
 
-  if(window._cmReady){{ setTimeout(initEditor, 100); }}
-  else {{ window.addEventListener('cmReady', function(){{ setTimeout(initEditor, 100); }}); }}
-  // Also try after DOM settles
-  setTimeout(initEditor, 800);
-  setTimeout(initEditor, 2000);
+  function initChain(){
+    if(window.CodeMirror){ setupEditor(); return; }
+    loadScript(
+      "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js",
+      function(){
+        loadScript(
+          "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/python/python.min.js",
+          function(){
+            loadScript(
+              "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/matchbrackets.min.js",
+              function(){
+                loadScript(
+                  "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/closebrackets.min.js",
+                  function(){ setupEditor(); }
+                );
+              }
+            );
+          }
+        );
+      }
+    );
+  }
 
-  // Run code function
-  window['runCode_' + KEY] = async function(){{
-    var code = cmInstance ? cmInstance.getValue() : INITIAL;
-    var out = document.getElementById('out-' + KEY);
-    var status = document.getElementById('status-' + KEY);
-    out.style.color = '#8b949e';
-    out.textContent = '\u23f3 Running...';
-    status.textContent = '';
+  /* try multiple times to handle Streamlit re-renders */
+  setTimeout(initChain, 200);
+  setTimeout(initChain, 1000);
+  setTimeout(initChain, 3000);
 
-    if(!window._pyReady){{
-      out.textContent = '\u23f3 Loading Python runtime... (first run ~15 sec)';
-      if(!window._pyLoading){{
-        window._pyLoading = true;
-        var s = document.createElement('script');
-        s.src = 'https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js';
-        s.onload = async function(){{
-          try{{
-            status.textContent = 'Loading...';
-            window._py = await loadPyodide({{
-              indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.25.1/full/'
-            }});
-            window._pyReady = true;
-            status.textContent = '\u2705 Ready';
-            await execCode_{qkey}(code, out);
-          }} catch(e){{
-            out.style.color='#f85149';
-            out.textContent = 'Failed to load Python: ' + e.message;
-          }}
-        }};
-        document.head.appendChild(s);
-      }}
-      return;
-    }}
-    await execCode_{qkey}(code, out);
-  }};
+  /* ── 2. Run button ── */
+  function getCode(){
+    var cm = window["_cm_"+QKEY];
+    if(cm) return cm.getValue();
+    var ta = document.getElementById("cm-mount-"+QKEY);
+    return ta ? ta.textContent : "";
+  }
 
-  window['execCode_' + KEY] = async function(code, out){{
-    try{{
-      await window._py.runPythonAsync(`
-import sys, io
-_buf = io.StringIO()
-sys.stdout = _buf
-sys.stderr = _buf
-`);
-      try{{
-        await window._py.runPythonAsync(code);
-      }} catch(e2){{
-        await window._py.runPythonAsync(`sys.stdout.write("Error: " + str(repr(""" + JSON.stringify(e2.message) + """)))`);
-      }}
-      var result = await window._py.runPythonAsync(`
-sys.stdout = sys.__stdout__
-sys.stderr = sys.__stderr__
-_buf.getvalue()
-`);
-      out.style.color = result.startsWith('Error') ? '#f85149' : '#3fb950';
-      out.textContent = result.trim() || '(no output)';
-    }} catch(e){{
-      try{{ await window._py.runPythonAsync('sys.stdout=sys.__stdout__;sys.stderr=sys.__stderr__'); }}catch(x){{}}
-      out.style.color = '#f85149';
-      out.textContent = 'Runtime error: ' + e.message;
-    }}
-  }};
+  function setOut(text, isErr){
+    var el = document.getElementById("py-out-"+QKEY);
+    if(!el) return;
+    el.textContent = text;
+    el.style.color = isErr ? "#f85149" : "#3fb950";
+  }
 
-  window['clearEditor_' + KEY] = function(){{
-    if(cmInstance) cmInstance.setValue('');
-    var out = document.getElementById('out-' + KEY);
-    out.style.color = '#484f58';
-    out.textContent = '-- Click Run to execute --';
-  }};
+  async function execPy(code){
+    try{
+      var py = window._pyodide;
+      py.runPython("import sys,io; _buf=io.StringIO(); sys.stdout=_buf; sys.stderr=_buf");
+      try{
+        py.runPython(code);
+      }catch(e){
+        py.runPython("sys.stdout.write('Error: '+str(repr(Exception())))");
+        py.runPython("sys.stdout.write('" + e.message.replace(/'/g,"\'").replace(/\n/g,"\\n") + "')");
+      }
+      var out = py.runPython("sys.stdout=sys.__stdout__; sys.stderr=sys.__stderr__; _buf.getvalue()");
+      setOut(out||"(no output)", out.startsWith("Error"));
+    }catch(e){
+      try{ window._pyodide.runPython("sys.stdout=sys.__stdout__;sys.stderr=sys.__stderr__"); }catch(x){}
+      setOut("Runtime error: "+e.message, true);
+    }
+  }
 
-}})();
+  function runCode(){
+    var code = getCode();
+    var statusEl = document.getElementById("py-status-"+QKEY);
+    setOut("Running...", false);
+    document.getElementById("py-out-"+QKEY).style.color="#8b949e";
+
+    if(window._pyodide){
+      execPy(code); return;
+    }
+    /* Load Pyodide */
+    setOut("Loading Python runtime... (10-20 sec first time)", false);
+    if(window._pyLoadStarted){ return; }
+    window._pyLoadStarted = true;
+    if(statusEl) statusEl.textContent = "Loading...";
+    loadScript(
+      "https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js",
+      async function(){
+        try{
+          window._pyodide = await loadPyodide({
+            indexURL:"https://cdn.jsdelivr.net/pyodide/v0.25.1/full/"
+          });
+          if(statusEl) statusEl.textContent = "Ready";
+          execPy(code);
+        }catch(e){
+          setOut("Failed to load Python: "+e.message, true);
+          window._pyLoadStarted = false;
+        }
+      }
+    );
+  }
+
+  /* attach buttons after DOM ready */
+  function attachButtons(){
+    var rb = document.getElementById("runbtn-"+QKEY);
+    var cb = document.getElementById("clearbtn-"+QKEY);
+    if(rb) rb.onclick = runCode;
+    if(cb) cb.onclick = function(){
+      var cm=window["_cm_"+QKEY]; if(cm) cm.setValue("");
+      setOut("-- Click Run or press Ctrl+Enter --", false);
+      document.getElementById("py-out-"+QKEY).style.color="#484f58";
+    };
+  }
+  setTimeout(attachButtons, 500);
+  setTimeout(attachButtons, 1500);
+
+})();
 </script>
 """
+    # Replace placeholders — safe, no f-string brace issues
+    html = TEMPLATE.replace("__QKEY__", qkey).replace("__INIT_CODE__", init_code)
     return html
+
 
 
 st.markdown("""
@@ -476,14 +465,20 @@ st.markdown("""
         max-width:920px;
         margin:1rem auto;
         border-top:5px solid #FCA311;
+        border-left:none;
+        border-right:none;
+        border-bottom:none;
     }
     .question-card {
-        background:#f8f9fa;
+        background:rgba(255,255,255,0.07);
         border-left:5px solid #FCA311;
+        border-top:1px solid rgba(252,163,17,0.2);
+        border-right:1px solid rgba(252,163,17,0.2);
+        border-bottom:1px solid rgba(252,163,17,0.2);
         padding:1.5rem;
         margin:1.5rem 0;
         border-radius:12px;
-        box-shadow:0 2px 8px rgba(0,0,0,0.08);
+        color:#FFFFFF;
     }
     .instruction-box {
         background:#14213D;
@@ -577,6 +572,28 @@ st.markdown("""
     /* ── Progress bar ── */
     .stProgress > div > div { background-color:#FCA311 !important; }
 
+    /* ── Catch-all for any remaining white strips ── */
+    [data-testid="stAppViewContainer"] > div:first-child {
+        background: transparent !important;
+    }
+    [data-testid="stVerticalBlock"] > div:first-child > div:first-child {
+        background: transparent !important;
+    }
+    .element-container:has(iframe) { display:none !important; }
+    /* remove white quiz question card borders */
+    .question-card h3, .question-card p, .question-card label,
+    .question-card .stMarkdown { color: #FFFFFF !important; }
+    .question-card .stRadio label { color: #FFFFFF !important; }
+    .question-card .stTextInput input {
+        background: rgba(255,255,255,0.1) !important;
+        color: #FFFFFF !important;
+        border: 1px solid #FCA311 !important;
+    }
+    .question-card .stTextArea textarea {
+        background: rgba(255,255,255,0.1) !important;
+        color: #FFFFFF !important;
+        border: 1px solid #FCA311 !important;
+    }
     /* ── Code editor ── */
     .code-editor-wrap {
         background:#1e1e1e; border-radius:12px;
@@ -813,16 +830,9 @@ elif st.session_state.page=="quiz":
         if q["type"]=="code":
             st.markdown(get_code_editor_html(key, current), unsafe_allow_html=True)
             ans=st.text_area(
-                "💾 Backup — also type/paste your code here (saved every 60s):",
+                "💾 Type/paste your code here (this is what gets saved):",
                 value=current, key=key, height=120,
-                help="Type your code here as backup. The editor above has syntax highlighting and Run button.")
-            # inject data-key so CodeMirror can sync back to Streamlit
-            st.markdown(f"""<script>
-            (function(){{
-                var ta=document.querySelector('textarea[aria-label="💾 Backup — also type/paste your code here (saved every 60s):"]');
-                if(ta) ta.setAttribute('data-key','{key}');
-            }})();
-            </script>""", unsafe_allow_html=True)
+                help="Use the editor above to write and run code. Also paste your final answer here.")
             if ans is not None: st.session_state.answers[key]=str(ans).strip()
         elif q["type"]=="short":
             ans=st.text_input("Your answer:",value=current,key=key,
