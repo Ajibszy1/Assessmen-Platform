@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import time
 import random
@@ -115,6 +116,209 @@ def get_admin_credentials():
     except Exception: return "admin@academy.com", "admin123"
 
 
+def get_gemini_key():
+    try: return st.secrets["gemini"]["api_key"]
+    except Exception: return None
+
+
+# ── Fuzzy matching fallback (zero-cost, no API needed) ──────────────
+import re as _re_module
+
+_STOPWORDS = {
+    "a","an","the","is","are","was","were","to","of","in","on","for",
+    "and","or","that","this","it","with","as","by","be","has","have",
+    "will","can","its","at","from"
+}
+
+def _normalize_text(s):
+    """Lowercase, strip punctuation/extra whitespace for forgiving comparison."""
+    s = str(s).lower().strip()
+    s = _re_module.sub(r"[^\w\s]", " ", s)
+    s = _re_module.sub(r"\s+", " ", s)
+    return s.strip()
+
+def _key_terms(s):
+    """Extract meaningful words from a reference answer, dropping stopwords."""
+    words = _normalize_text(s).split()
+    return {w for w in words if w not in _STOPWORDS and len(w) > 1}
+
+def _normalize_code(code):
+    """
+    Strip Python code down to its structural skeleton so that variable
+    names don't matter — only keywords, built-ins, operators, and
+    structure are compared. 'arr = np.ones((3,3))' and
+    'matrix = np.ones((3,3))' normalize to the same skeleton.
+    """
+    code = str(code)
+    # Remove comments
+    code = _re_module.sub(r"#.*", "", code)
+    # Pull out string literals so we don't touch their contents, then strip them
+    code = _re_module.sub(r"(\"[^\"]*\"|'[^']*')", "STR", code)
+
+    KEYWORDS = {
+        "false","none","true","and","as","assert","async","await","break",
+        "class","continue","def","del","elif","else","except","finally",
+        "for","from","global","if","import","in","is","lambda","nonlocal",
+        "not","or","pass","raise","return","try","while","with","yield"
+    }
+    BUILTINS = {
+        "print","len","range","str","int","float","list","dict","set",
+        "tuple","bool","type","open","input","sum","max","min","sorted",
+        "enumerate","zip","map","filter","abs","round","isinstance",
+        "super","self","np","numpy","pd","pandas","plt","sns"
+    }
+
+    tokens = _re_module.findall(r"[A-Za-z_][A-Za-z0-9_]*|[^\sA-Za-z_]", code)
+    out = []
+    for tok in tokens:
+        low = tok.lower()
+        if low in KEYWORDS or low in BUILTINS or tok == "STR":
+            out.append(low)
+        elif _re_module.match(r"^[A-Za-z_][A-Za-z0-9_]*$", tok):
+            out.append("VAR")  # any other identifier becomes a placeholder
+        else:
+            out.append(tok)  # punctuation/operators kept as-is
+    return "".join(out)
+
+
+def fuzzy_mark_answer(question_text, correct_answer, student_answer, q_type="short"):
+    """
+    Free, no-API fallback grading. Returns True/False — never None,
+    since this has no external dependency that can fail.
+    """
+    student_answer = str(student_answer or "").strip()
+    if not student_answer:
+        return False
+
+    if q_type == "code":
+        norm_correct = _normalize_code(correct_answer)
+        norm_student = _normalize_code(student_answer)
+        if norm_correct == norm_student:
+            return True
+        # Allow partial credit match: most of the structural tokens overlap
+        c_tokens = set(_re_module.findall(r"[A-Za-z_]+|VAR", norm_correct))
+        s_tokens = set(_re_module.findall(r"[A-Za-z_]+|VAR", norm_student))
+        if not c_tokens:
+            return norm_correct in norm_student
+        overlap = len(c_tokens & s_tokens) / len(c_tokens)
+        return overlap >= 0.7
+
+    # short-answer: exact normalized match OR key-term coverage
+    norm_correct = _normalize_text(correct_answer)
+    norm_student = _normalize_text(student_answer)
+    if norm_correct == norm_student:
+        return True
+    if norm_correct in norm_student:
+        return True
+
+    terms = _key_terms(correct_answer)
+    if not terms:
+        return False
+    student_words = set(_normalize_text(student_answer).split())
+    matched = len(terms & student_words)
+    coverage = matched / len(terms)
+    return coverage >= 0.6
+
+
+def gemini_mark_answer(question_text, correct_answer, student_answer, q_type="short"):
+    """
+    Uses Google Gemini's free API tier to judge whether a student's
+    short-answer or code answer is correct, even if worded/written
+    differently from the reference. Returns True/False, or None if
+    Gemini is unavailable/failed — caller should use fuzzy_mark_answer
+    as the free fallback in that case.
+    """
+    api_key = get_gemini_key()
+    if not api_key:
+        return None
+    if not str(student_answer).strip():
+        return False
+
+    if q_type == "code":
+        instruction = (
+            "You are grading a student's Python code answer. Judge whether the "
+            "student's code achieves the same correct result/logic as the reference "
+            "answer, even if variable names, formatting, or exact syntax differ. "
+            "Minor stylistic differences are fine. Logic errors or wrong output are not."
+        )
+    else:
+        instruction = (
+            "You are grading a student's short-answer response. Judge whether the "
+            "student's answer is substantively correct compared to the reference "
+            "answer, even if worded differently. Be reasonably lenient on phrasing "
+            "but strict on factual/technical accuracy."
+        )
+
+    prompt = (
+        f"{instruction}\n\n"
+        f"Question: {question_text}\n\n"
+        f"Reference answer: {correct_answer}\n\n"
+        f"Student's answer: {student_answer}\n\n"
+        "Respond with ONLY the single word CORRECT or INCORRECT — nothing else."
+    )
+
+    try:
+        r = requests.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"gemini-2.0-flash:generateContent?key={api_key}",
+            headers={"content-type": "application/json"},
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"maxOutputTokens": 10, "temperature": 0},
+            },
+            timeout=15,
+        )
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        text = (
+            data.get("candidates", [{}])[0]
+            .get("content", {})
+            .get("parts", [{}])[0]
+            .get("text", "")
+        ).strip().upper()
+        if "CORRECT" in text and "INCORRECT" not in text:
+            return True
+        if "INCORRECT" in text:
+            return False
+        return None
+    except Exception:
+        return None
+
+
+def mark_answer_smart(question_text, correct_answer, student_answer, q_type="short"):
+    """
+    Tries Gemini first (free tier, smarter judgment). If Gemini is not
+    configured or the call fails for any reason, falls back instantly
+    to the zero-cost fuzzy matcher. Always returns True/False — never
+    leaves a question ungraded.
+    """
+    result = gemini_mark_answer(question_text, correct_answer, student_answer, q_type)
+    if result is not None:
+        return result
+    return fuzzy_mark_answer(question_text, correct_answer, student_answer, q_type)
+
+
+def ai_mark_all_answers(questions, answers):
+    """
+    Marks every short/code question in a submission using Gemini with
+    automatic fallback to free fuzzy-matching per question. MCQ questions
+    are left alone — exact match already handles those correctly and
+    reliably, no need to spend a grading call on them.
+    Returns an overrides dict: {"q_0": True/False, ...}
+    """
+    overrides = {}
+    for i, q in enumerate(questions):
+        if q.get("type") not in ("short", "code"):
+            continue
+        key = f"q_{i}"
+        student_ans = answers.get(key, "")
+        overrides[key] = mark_answer_smart(
+            q.get("question", ""), q.get("answer", ""), student_ans, q.get("type")
+        )
+    return overrides
+
+
 
 # =====================================================================
 # HELPERS
@@ -201,256 +405,354 @@ def get_security_js():
     }})();</script>"""
 
 
-def get_code_runner_html(qkey, output_label="pyout"):
+def code_editor_component(qkey, current_code=""):
     """
-    Run button + output panel that reads code DIRECTLY from the Streamlit
-    text_area below it (found via DOM, matched by a unique marker class
-    we inject into that widget's container). This guarantees there is only
-    ONE place the student types code, and it's the one that gets saved.
+    Single self-contained Python code editor: live syntax highlighting as you
+    type (contenteditable div re-colored on every keystroke, cursor-safe),
+    a Run button that executes via Pyodide and shows output INSIDE the same
+    box, and a hidden bridge that reports the current code back to Streamlit
+    via components.html's bidirectional value channel.
+    Returns the current code (str) so it can be saved into session_state.
     """
-    TEMPLATE = r"""
-<div style="display:flex;justify-content:space-between;align-items:center;
-     background:#14213D;border:2px solid #FCA311;border-bottom:none;
-     border-radius:12px 12px 0 0;padding:8px 14px;margin-top:0.5rem;">
-  <span style="color:#FCA311;font-weight:700;font-size:0.9rem;">
-    &#x1F40D; Python &nbsp;
-    <span style="color:#888;font-weight:400;font-size:0.75rem;">
-      Run executes the code in the box below
+    import json as _j
+    init_code_json = _j.dumps(current_code or "")
+
+    html = r"""
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; padding:0; background:transparent; font-family:'Courier New',monospace; }
+
+  .editor-shell {
+    border:2px solid #FCA311; border-radius:12px; overflow:hidden;
+    background:#1e1e1e;
+  }
+  .editor-toolbar {
+    display:flex; justify-content:space-between; align-items:center;
+    padding:8px 14px; background:#14213D; border-bottom:1px solid #FCA311;
+  }
+  .editor-title { color:#FCA311; font-weight:700; font-size:0.85rem; font-family:sans-serif; }
+  .editor-hint  { color:#888; font-weight:400; font-size:0.72rem; margin-left:8px; }
+  .run-btn {
+    background:#238636; color:white; border:none; padding:6px 18px;
+    border-radius:6px; cursor:pointer; font-size:0.85rem; font-weight:700;
+    font-family:sans-serif;
+  }
+  .run-btn:active { transform: translateY(1px); }
+  .status { color:#8b949e; font-size:0.75rem; font-family:sans-serif; margin-right:8px; }
+
+  #code-input {
+    width:100%; min-height:180px; max-height:420px; overflow-y:auto;
+    background:#1e1e1e; color:#d4d4d4; padding:14px 16px;
+    font-family:'Courier New',Courier,monospace; font-size:14px; line-height:1.6;
+    white-space:pre-wrap; word-break:break-word; outline:none; tab-size:4;
+  }
+  #code-input:empty:before {
+    content: attr(data-placeholder); color:#5c6370; pointer-events:none;
+  }
+
+  .kw   { color:#FCA311; font-weight:600; }
+  .fn   { color:#dcdcaa; font-weight:600; }
+  .blt  { color:#4fc1ff; }
+  .str  { color:#ce9178; }
+  .num  { color:#b5cea8; }
+  .cmt  { color:#6a9955; font-style:italic; }
+
+  .output-panel {
+    background:#0d1117; border-top:1px solid #333; padding:10px 16px;
+  }
+  .output-label { color:#8b949e; font-size:0.72rem; margin-bottom:6px; font-family:sans-serif; }
+  #output {
+    font-family:'Courier New',monospace; font-size:0.85rem; min-height:32px;
+    white-space:pre-wrap; color:#484f58; line-height:1.5;
+  }
+</style>
+</head>
+<body>
+
+<div class="editor-shell">
+  <div class="editor-toolbar">
+    <span class="editor-title">&#x1F40D; Python
+      <span class="editor-hint">type your code &nbsp;|&nbsp; Ctrl+Enter to run</span>
     </span>
-  </span>
-  <div style="display:flex;gap:8px;align-items:center;">
-    <span id="pystatus_QKEY" style="color:#8b949e;font-size:0.78rem;"></span>
-    <button id="runbtn_QKEY"
-      style="background:#238636;color:white;border:none;padding:6px 18px;
-             border-radius:6px;cursor:pointer;font-size:0.85rem;font-weight:700;">
-      &#x25B6; Run Code
-    </button>
+    <div style="display:flex;align-items:center;">
+      <span class="status" id="status"></span>
+      <button class="run-btn" id="runBtn">&#x25B6; Run</button>
+    </div>
   </div>
-</div>
-<div id="codewrap_QKEY" data-marker="QKEY"
-     style="border:2px solid #FCA311;border-top:none;background:#1e1e1e;
-            padding:6px 8px 0 8px;border-radius:0;font-size:0;line-height:0;">
-</div>
-<div style="background:#0d1117;border:2px solid #FCA311;border-top:none;
-     border-radius:0 0 12px 12px;padding:10px 16px;">
-  <div style="color:#8b949e;font-size:0.75rem;margin-bottom:6px;font-family:sans-serif;">
-    &#x1F4E4; Output:
+  <div id="code-input" contenteditable="true" spellcheck="false"
+       data-placeholder="# Write your Python code here..."></div>
+  <div class="output-panel">
+    <div class="output-label">&#x1F4E4; Output</div>
+    <div id="output">-- Click Run or press Ctrl+Enter --</div>
   </div>
-  <pre id="pyout_QKEY"
-    style="font-family:'Courier New',monospace;font-size:0.88rem;
-           min-height:40px;margin:0;white-space:pre-wrap;
-           color:#484f58;line-height:1.5;">-- Click Run Code to execute --</pre>
 </div>
 
 <script>
-(function(){
-  var Q = "QKEY";
-  var outEl = document.getElementById("pyout_" + Q);
-  var stEl  = document.getElementById("pystatus_" + Q);
-  var runBtn= document.getElementById("runbtn_" + Q);
+const INIT_CODE = __INIT_CODE__;
+const editor = document.getElementById('code-input');
+const output = document.getElementById('output');
+const status = document.getElementById('status');
+const runBtn = document.getElementById('runBtn');
 
-  function findRealTextarea(){
-    /* Strategy: find the <div data-code-key="QKEY"> marker we injected right
-       before the Streamlit text_area widget, then walk forward in the DOM
-       to the next <textarea>. This is reliable regardless of Streamlit's
-       internal hashed widget IDs. */
-    try{
-      var doc = window.parent.document;
-      var marker = doc.querySelector('[data-code-key="' + Q + '"]');
-      if(marker){
-        /* Search forward through siblings/ancestors for the next textarea */
-        var node = marker;
-        for(var hops=0; hops<8 && node; hops++){
-          node = node.nextElementSibling || (node.parentElement ? node.parentElement.nextElementSibling : null);
-          if(node){
-            var ta = node.querySelector ? node.querySelector('textarea') : null;
-            if(ta) return ta;
-            if(node.tagName === 'TEXTAREA') return node;
+const KEYWORDS = ['False','None','True','and','as','assert','async','await','break',
+  'class','continue','def','del','elif','else','except','finally','for','from',
+  'global','if','import','in','is','lambda','nonlocal','not','or','pass','raise',
+  'return','try','while','with','yield'];
+const BUILTINS = ['print','len','range','str','int','float','list','dict','set','tuple',
+  'bool','type','open','input','sum','max','min','sorted','enumerate','zip','map',
+  'filter','abs','round','isinstance','super','self'];
+
+function escapeHtml(s){
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function highlight(raw){
+  // Tokenize line by line to keep comments/strings scoped correctly
+  return raw.split('\n').map(line => {
+    let out = '';
+    let i = 0;
+    while(i < line.length){
+      const ch = line[i];
+
+      // comment: rest of line
+      if(ch === '#'){
+        out += '<span class="cmt">' + escapeHtml(line.slice(i)) + '</span>';
+        break;
+      }
+      // string literal
+      if(ch === '"' || ch === "'"){
+        const quote = ch;
+        let j = i+1;
+        while(j < line.length && line[j] !== quote){ j++; }
+        const strContent = line.slice(i, Math.min(j+1, line.length));
+        out += '<span class="str">' + escapeHtml(strContent) + '</span>';
+        i = j+1;
+        continue;
+      }
+      // number
+      if(/[0-9]/.test(ch) && (i===0 || !/[A-Za-z_]/.test(line[i-1]))){
+        let j = i;
+        while(j < line.length && /[0-9.]/.test(line[j])) j++;
+        out += '<span class="num">' + escapeHtml(line.slice(i,j)) + '</span>';
+        i = j;
+        continue;
+      }
+      // identifier/keyword/builtin
+      if(/[A-Za-z_]/.test(ch)){
+        let j = i;
+        while(j < line.length && /[A-Za-z0-9_]/.test(line[j])) j++;
+        const word = line.slice(i,j);
+        if(KEYWORDS.includes(word)){
+          out += '<span class="kw">' + word + '</span>';
+        } else if(BUILTINS.includes(word) && line[j] === '('){
+          out += '<span class="blt">' + word + '</span>';
+        } else {
+          // function name right after 'def '
+          const before = line.slice(0, i).trimEnd();
+          if(before.endsWith('def')){
+            out += '<span class="fn">' + word + '</span>';
+          } else {
+            out += escapeHtml(word);
           }
         }
+        i = j;
+        continue;
       }
-      /* Fallback: textarea closest to this iframe in DOM order */
-      var iframes = doc.querySelectorAll('iframe');
-      for (var j=0; j<iframes.length; j++){
-        if (iframes[j].contentWindow === window){
-          var block = iframes[j].closest('[data-testid="stVerticalBlock"]') || iframes[j].parentElement.parentElement;
-          var prevBlock = block ? block.previousElementSibling : null;
-          if(prevBlock){
-            var ta2 = prevBlock.querySelector('textarea');
-            if(ta2) return ta2;
-          }
-        }
+      out += escapeHtml(ch);
+      i++;
+    }
+    return out;
+  }).join('\n');
+}
+
+function getCaretOffset(el){
+  const sel = window.getSelection();
+  if(!sel.rangeCount) return 0;
+  const range = sel.getRangeAt(0);
+  const preRange = range.cloneRange();
+  preRange.selectNodeContents(el);
+  preRange.setEnd(range.endContainer, range.endOffset);
+  return preRange.toString().length;
+}
+
+function setCaretOffset(el, offset){
+  const range = document.createRange();
+  const sel = window.getSelection();
+  let charIndex = 0;
+  let found = false;
+
+  function traverse(node){
+    if(found) return;
+    if(node.nodeType === 3){
+      const next = charIndex + node.length;
+      if(offset <= next){
+        range.setStart(node, Math.max(0, offset - charIndex));
+        range.collapse(true);
+        found = true;
+        return;
       }
-    }catch(e){}
-    return null;
+      charIndex = next;
+    } else {
+      for(let child of node.childNodes){
+        traverse(child);
+        if(found) return;
+      }
+    }
   }
-
-  function setOut(txt, isErr){
-    outEl.textContent = txt;
-    outEl.style.color = isErr ? "#f85149" : "#3fb950";
+  traverse(el);
+  if(!found){
+    range.selectNodeContents(el);
+    range.collapse(false);
   }
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
 
-  async function execCode(code){
-    var py = window.parent._AP_pyodide;
-    var output = "", hadError = false;
+function getPlainText(){
+  return editor.innerText.replace(/\u00A0/g, ' ');
+}
+
+let highlightTimer = null;
+function reHighlight(){
+  const offset = getCaretOffset(editor);
+  const text = getPlainText();
+  editor.innerHTML = highlight(text) || '';
+  setCaretOffset(editor, offset);
+  syncToStreamlit(text);
+}
+
+function syncToStreamlit(text){
+  try{
+    if(window.Streamlit){
+      window.Streamlit.setComponentValue(text);
+    }
+  }catch(e){}
+}
+
+editor.addEventListener('input', function(){
+  clearTimeout(highlightTimer);
+  highlightTimer = setTimeout(reHighlight, 180);
+  syncToStreamlit(getPlainText());
+});
+
+editor.addEventListener('keydown', function(e){
+  if(e.key === 'Tab'){
+    e.preventDefault();
+    document.execCommand('insertText', false, '    ');
+  }
+  if((e.ctrlKey || e.metaKey) && e.key === 'Enter'){
+    e.preventDefault();
+    runCode();
+  }
+});
+
+editor.addEventListener('blur', function(){
+  reHighlight();
+});
+
+/* ── Run via Pyodide ── */
+async function execCode(code){
+  const py = window._AP_pyodide;
+  let out = '', hadError = false;
+  try{
+    await py.runPythonAsync(
+      "import sys, io\n" +
+      "if not hasattr(sys, '_orig_stdout'):\n" +
+      "    sys._orig_stdout = sys.stdout\n" +
+      "    sys._orig_stderr = sys.stderr\n" +
+      "sys.stdout = io.StringIO()\nsys.stderr = sys.stdout"
+    );
     try{
-      await py.runPythonAsync(
-        "import sys, io\n" +
-        "if not hasattr(sys, '_orig_stdout'):\n" +
-        "    sys._orig_stdout = sys.stdout\n" +
-        "    sys._orig_stderr = sys.stderr\n" +
-        "sys.stdout = io.StringIO()\nsys.stderr = sys.stdout"
-      );
-      try{
-        await py.runPythonAsync(code);
-      }catch(runErr){
-        hadError = true;
-        py.globals.set("__js_err__", String(runErr.message));
-        try{ await py.runPythonAsync("sys.stdout.write('\\nError: ' + __js_err__)"); }
-        catch(w){ hadError = true; }
-      }
-      output = await py.runPythonAsync("sys.stdout.getvalue()");
-      await py.runPythonAsync("sys.stdout = sys._orig_stdout\nsys.stderr = sys._orig_stderr");
-      setOut(output.trim() || "(no output)", hadError || output.includes("Error:"));
+      await py.runPythonAsync(code);
+    }catch(runErr){
+      hadError = true;
+      py.globals.set('__js_err__', String(runErr.message));
+      try{ await py.runPythonAsync("sys.stdout.write('\\nError: ' + __js_err__)"); }
+      catch(w){ hadError = true; }
+    }
+    out = await py.runPythonAsync('sys.stdout.getvalue()');
+    await py.runPythonAsync('sys.stdout = sys._orig_stdout\nsys.stderr = sys._orig_stderr');
+    output.textContent = out.trim() || '(no output)';
+    output.style.color = (hadError || out.includes('Error:')) ? '#f85149' : '#3fb950';
+  }catch(e){
+    try{ await py.runPythonAsync('sys.stdout = sys._orig_stdout; sys.stderr = sys._orig_stderr'); }catch(x){}
+    output.textContent = 'Error: ' + e.message;
+    output.style.color = '#f85149';
+  }
+}
+
+function runCode(){
+  const code = getPlainText();
+  if(!code.trim()){
+    output.textContent = '(no code to run)';
+    output.style.color = '#888';
+    return;
+  }
+  if(window._AP_pyodide){
+    output.style.color = '#8b949e';
+    output.textContent = 'Running...';
+    execCode(code);
+    return;
+  }
+  output.style.color = '#8b949e';
+  output.textContent = 'Loading Python runtime... (first run ~15s)';
+  status.textContent = 'Loading...';
+  if(window._AP_pyLoading) return;
+  window._AP_pyLoading = true;
+
+  const s = document.createElement('script');
+  s.src = 'https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js';
+  s.onload = async function(){
+    try{
+      window._AP_pyodide = await loadPyodide({
+        indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.25.1/full/'
+      });
+      status.textContent = '\u2705 Ready';
+      output.style.color = '#8b949e';
+      output.textContent = 'Running...';
+      execCode(code);
     }catch(e){
-      try{ await py.runPythonAsync("sys.stdout = sys._orig_stdout; sys.stderr = sys._orig_stderr"); }catch(x){}
-      setOut("Error: " + e.message, true);
+      output.textContent = 'Failed to load Python: ' + e.message;
+      output.style.color = '#f85149';
+      window._AP_pyLoading = false;
+      status.textContent = '';
     }
+  };
+  s.onerror = function(){
+    output.textContent = 'Network error: could not load Python runtime.';
+    output.style.color = '#f85149';
+    window._AP_pyLoading = false;
+  };
+  document.head.appendChild(s);
+}
+
+runBtn.addEventListener('click', runCode);
+
+/* ── Init editor content with highlighting ── */
+editor.innerHTML = highlight(INIT_CODE) || '';
+
+/* ── Streamlit component bridge ── */
+function initStreamlitBridge(){
+  if(window.Streamlit){
+    window.Streamlit.setComponentReady();
+    window.Streamlit.setFrameHeight(420);
+    syncToStreamlit(getPlainText());
+  } else {
+    setTimeout(initStreamlitBridge, 100);
   }
-
-  function runCode(){
-    var ta = findRealTextarea();
-    if(!ta){
-      setOut("Could not find the code box. Type your code in the box below, then click Run again.", true);
-      return;
-    }
-    var code = ta.value;
-    if(!code.trim()){ setOut("(no code to run)", false); outEl.style.color="#888"; return; }
-
-    if(window.parent._AP_pyodide){
-      outEl.style.color="#8b949e"; outEl.textContent="Running...";
-      execCode(code); return;
-    }
-
-    outEl.style.color="#8b949e";
-    outEl.textContent = "Loading Python runtime... (first run ~15s)";
-    if(stEl) stEl.textContent = "Loading...";
-    if(window.parent._AP_pyLoading) return;
-    window.parent._AP_pyLoading = true;
-
-    var s = window.parent.document.createElement("script");
-    s.src = "https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js";
-    s.onload = async function(){
-      try{
-        window.parent._AP_pyodide = await window.parent.loadPyodide({
-          indexURL: "https://cdn.jsdelivr.net/pyodide/v0.25.1/full/"
-        });
-        if(stEl) stEl.textContent = "\u2705 Ready";
-        outEl.style.color="#8b949e"; outEl.textContent="Running...";
-        execCode(code);
-      }catch(e){
-        setOut("Failed to load Python: " + e.message, true);
-        window.parent._AP_pyLoading = false;
-        if(stEl) stEl.textContent = "";
-      }
-    };
-    s.onerror = function(){
-      setOut("Network error: could not load Python runtime.", true);
-      window.parent._AP_pyLoading = false;
-    };
-    window.parent.document.head.appendChild(s);
-  }
-
-  if(runBtn) runBtn.onclick = runCode;
-})();
+}
 </script>
+<script src="https://cdn.jsdelivr.net/npm/streamlit-component-lib@2.0.0/dist/streamlit-component-lib.js" onload="initStreamlitBridge()"></script>
+</body>
+</html>
 """
-    return TEMPLATE.replace("QKEY", qkey)
-
-
-def get_code_preview_html(code_text):
-    """
-    Read-only, Python-syntax-colored preview of the student's current code.
-    Pure HTML/CSS — no editing here, just a colored mirror so the plain
-    Streamlit textarea above can stay simple while still giving visual
-    feedback (keywords, strings, comments, numbers in different colors).
-    """
-    import html as _html
-    import re as _re
-
-    escaped = _html.escape(code_text) if code_text else ""
-
-    KEYWORDS = (
-        "False|None|True|and|as|assert|async|await|break|class|continue|"
-        "def|del|elif|else|except|finally|for|from|global|if|import|in|"
-        "is|lambda|nonlocal|not|or|pass|raise|return|try|while|with|yield"
-    )
-    BUILTINS = (
-        "print|len|range|str|int|float|list|dict|set|tuple|bool|type|"
-        "open|input|sum|max|min|sorted|enumerate|zip|map|filter|abs|"
-        "round|isinstance|super|self"
-    )
-
-    def colorize(line):
-        # Comments first (rest of line)
-        m = _re.search(r"#.*$", line)
-        comment = ""
-        if m:
-            comment = m.group(0)
-            line = line[:m.start()]
-
-        # Strings (single/double quoted, naive but good enough for preview)
-        line = _re.sub(
-            r"(&quot;[^&]*?&quot;|&#x27;[^&]*?&#x27;)",
-            r'<span style="color:#ce9178;">\1</span>',
-            line
-        )
-        # Numbers
-        line = _re.sub(
-            r"\b(\d+\.?\d*)\b",
-            r'<span style="color:#b5cea8;">\1</span>',
-            line
-        )
-        # Keywords
-        line = _re.sub(
-            r"\b(" + KEYWORDS + r")\b",
-            r'<span style="color:#FCA311;font-weight:600;">\1</span>',
-            line
-        )
-        # Built-in functions
-        line = _re.sub(
-            r"\b(" + BUILTINS + r")\b(?=\()",
-            r'<span style="color:#4fc1ff;">\1</span>',
-            line
-        )
-        # Function definitions (highlight the function name after def)
-        line = _re.sub(
-            r'(<span style="color:#FCA311;font-weight:600;">def</span>)(\s+)(\w+)',
-            r'\1\2<span style="color:#dcdcaa;font-weight:600;">\3</span>',
-            line
-        )
-
-        if comment:
-            line += '<span style="color:#6a9955;font-style:italic;">' + comment + '</span>'
-        return line
-
-    lines = escaped.split("\n") if escaped else [""]
-    colored_lines = [colorize(l) if l.strip() else "&nbsp;" for l in lines]
-    body = "<br>".join(colored_lines)
-
-    html = f"""
-<div style="background:#1e1e1e;border:1px solid #333;border-radius:8px;
-     padding:10px 14px;margin:4px 0 0.5rem 0;">
-  <div style="color:#666;font-size:0.72rem;margin-bottom:4px;font-family:sans-serif;">
-    &#x1F3A8; Syntax preview (updates after you click elsewhere in the box above)
-  </div>
-  <div style="font-family:'Courier New',monospace;font-size:0.85rem;
-       line-height:1.6;color:#d4d4d4;white-space:pre-wrap;word-break:break-word;">
-    {body}
-  </div>
-</div>
-"""
-    return html
+    html = html.replace("__INIT_CODE__", init_code_json)
+    result = components.html(html, height=420, scrolling=True)
+    return result if isinstance(result, str) else current_code
 
 
 st.markdown("""
@@ -872,15 +1174,9 @@ elif st.session_state.page=="quiz":
         st.markdown(f"### {q['question']}")
         key=f"q_{i}"; current=st.session_state.answers.get(key,"")
         if q["type"]=="code":
-            st.markdown(f"<div data-code-key='{key}'></div>", unsafe_allow_html=True)
-            ans=st.text_area(
-                "🐍 Write your Python code here:",
-                value=current, key=key, height=160,
-                placeholder="# Write your Python code here...",
-                help="Write your answer here, then click Run Code below to test it.")
-            if ans is not None: st.session_state.answers[key]=str(ans).strip()
-            st.markdown(get_code_runner_html(key), unsafe_allow_html=True)
-            st.markdown(get_code_preview_html(ans or ""), unsafe_allow_html=True)
+            code_val = code_editor_component(key, current)
+            if code_val is not None:
+                st.session_state.answers[key]=str(code_val).strip()
         elif q["type"]=="short":
             ans=st.text_input("Your answer:",value=current,key=key,
                 placeholder="Type your answer here...")
@@ -919,7 +1215,23 @@ elif st.session_state.page=="result":
     course=st.session_state.current_course or {}
     course_id=str(course.get("course_id",""))
     pass_mark=int(course.get("pass_mark",PASS_MARK))
-    correct,total,percentage=compute_score(st.session_state.questions,st.session_state.answers)
+
+    # Run smart marking once per submission (short + code questions only).
+    # Uses Gemini if configured, otherwise free fuzzy-matching automatically.
+    # Cached in session_state so it doesn't re-run on every page rerun.
+    if "ai_overrides" not in st.session_state:
+        has_gradeable = any(q.get("type") in ("short","code") for q in st.session_state.questions)
+        if has_gradeable:
+            with st.spinner("Grading short-answer and code questions..."):
+                st.session_state.ai_overrides = ai_mark_all_answers(
+                    st.session_state.questions, st.session_state.answers
+                )
+        else:
+            st.session_state.ai_overrides = {}
+
+    correct,total,percentage=compute_score(
+        st.session_state.questions, st.session_state.answers, st.session_state.ai_overrides
+    )
     passed=percentage>=pass_mark
     st.markdown('<div class="exam-container" style="text-align:center;">',unsafe_allow_html=True)
     st.title("📊 Assessment Results")
@@ -941,7 +1253,7 @@ elif st.session_state.page=="result":
             "course_id":course_id,"attempt_num":st.session_state.attempt_num,
             "questions_json":json.dumps(st.session_state.questions),
             "answers_json":json.dumps(st.session_state.answers),
-            "overrides_json":json.dumps({}),"submit_time":datetime.now().isoformat()}
+            "overrides_json":json.dumps(st.session_state.ai_overrides),"submit_time":datetime.now().isoformat()}
         with st.spinner("Saving..."):
             if db_insert("results",rd):
                 db_insert("submissions",sub_row)
