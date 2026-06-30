@@ -201,152 +201,148 @@ def get_security_js():
     }})();</script>"""
 
 
-def get_code_editor_html(qkey, current_code=""):
+def get_code_runner_html(qkey, output_label="pyout"):
     """
-    Working Python code editor for Streamlit.
-    Plain textarea (works inside Streamlit iframes) + Pyodide execution
-    with clean, non-crashing error capture.
+    Run button + output panel that reads code DIRECTLY from the Streamlit
+    text_area below it (found via DOM, matched by a unique marker class
+    we inject into that widget's container). This guarantees there is only
+    ONE place the student types code, and it's the one that gets saved.
     """
-    import html as _html
-    safe_init = _html.escape(current_code) if current_code else ""
-
-    TEMPLATE = r"""<div style="border:2px solid #FCA311;border-radius:12px;
-     overflow:hidden;margin:0.5rem 0 1rem 0;font-family:'Courier New',monospace;">
-
-  <div style="display:flex;justify-content:space-between;align-items:center;
-       padding:8px 14px;background:#14213D;border-bottom:2px solid #FCA311;">
-    <span style="color:#FCA311;font-weight:700;font-size:0.9rem;">
-      &#x1F40D; Python Editor
-      <span style="color:#888;font-weight:400;font-size:0.75rem;margin-left:8px;">
-        Tab = 4 spaces &nbsp;|&nbsp; Ctrl+Enter = Run
-      </span>
+    TEMPLATE = r"""
+<div style="display:flex;justify-content:space-between;align-items:center;
+     background:#14213D;border:2px solid #FCA311;border-bottom:none;
+     border-radius:12px 12px 0 0;padding:8px 14px;margin-top:0.5rem;">
+  <span style="color:#FCA311;font-weight:700;font-size:0.9rem;">
+    &#x1F40D; Python &nbsp;
+    <span style="color:#888;font-weight:400;font-size:0.75rem;">
+      Run executes the code in the box below
     </span>
-    <div style="display:flex;gap:8px;align-items:center;">
-      <span id="pystatus_QKEY" style="color:#8b949e;font-size:0.78rem;"></span>
-      <button id="runbtn_QKEY"
-        style="background:#238636;color:white;border:none;padding:6px 18px;
-               border-radius:6px;cursor:pointer;font-size:0.85rem;font-weight:700;
-               letter-spacing:0.5px;">
-        &#x25B6; Run
-      </button>
-      <button id="clearbtn_QKEY"
-        style="background:#333;color:#aaa;border:1px solid #555;padding:6px 12px;
-               border-radius:6px;cursor:pointer;font-size:0.85rem;">
-        Clear
-      </button>
-    </div>
+  </span>
+  <div style="display:flex;gap:8px;align-items:center;">
+    <span id="pystatus_QKEY" style="color:#8b949e;font-size:0.78rem;"></span>
+    <button id="runbtn_QKEY"
+      style="background:#238636;color:white;border:none;padding:6px 18px;
+             border-radius:6px;cursor:pointer;font-size:0.85rem;font-weight:700;">
+      &#x25B6; Run Code
+    </button>
   </div>
-
-  <div style="background:#1e1e1e;position:relative;">
-    <textarea id="codearea_QKEY"
-      spellcheck="false" autocorrect="off" autocapitalize="off" autocomplete="off"
-      placeholder="# Write your Python code here..."
-      style="width:100%;min-height:160px;background:#1e1e1e;color:#d4d4d4;
-             border:none;outline:none;padding:14px 16px;
-             font-family:'Courier New',Courier,monospace;font-size:14px;
-             line-height:1.6;resize:vertical;tab-size:4;
-             box-sizing:border-box;display:block;
-             caret-color:#FCA311;">INIT_PLACEHOLDER</textarea>
+</div>
+<div id="codewrap_QKEY" data-marker="QKEY"
+     style="border:2px solid #FCA311;border-top:none;background:#1e1e1e;
+            padding:6px 8px 0 8px;border-radius:0;font-size:0;line-height:0;">
+</div>
+<div style="background:#0d1117;border:2px solid #FCA311;border-top:none;
+     border-radius:0 0 12px 12px;padding:10px 16px;">
+  <div style="color:#8b949e;font-size:0.75rem;margin-bottom:6px;font-family:sans-serif;">
+    &#x1F4E4; Output:
   </div>
-
-  <div style="background:#0d1117;border-top:1px solid #333;padding:10px 16px;">
-    <div style="color:#8b949e;font-size:0.75rem;margin-bottom:6px;font-family:sans-serif;">
-      &#x1F4E4; Output:
-    </div>
-    <pre id="pyout_QKEY"
-      style="font-family:'Courier New',monospace;font-size:0.88rem;
-             min-height:40px;margin:0;white-space:pre-wrap;
-             color:#484f58;line-height:1.5;">-- Click Run or Ctrl+Enter --</pre>
-  </div>
+  <pre id="pyout_QKEY"
+    style="font-family:'Courier New',monospace;font-size:0.88rem;
+           min-height:40px;margin:0;white-space:pre-wrap;
+           color:#484f58;line-height:1.5;">-- Click Run Code to execute --</pre>
 </div>
 
 <script>
 (function(){
   var Q = "QKEY";
-  var ta    = document.getElementById("codearea_" + Q);
-  var outEl = document.getElementById("pyout_"   + Q);
-  var stEl  = document.getElementById("pystatus_"+ Q);
-  var runBtn= document.getElementById("runbtn_"  + Q);
-  var clrBtn= document.getElementById("clearbtn_"+ Q);
+  var outEl = document.getElementById("pyout_" + Q);
+  var stEl  = document.getElementById("pystatus_" + Q);
+  var runBtn= document.getElementById("runbtn_" + Q);
 
-  ta.addEventListener("keydown", function(e){
-    if(e.key === "Tab"){
-      e.preventDefault();
-      var s = ta.selectionStart, end = ta.selectionEnd;
-      ta.value = ta.value.substring(0,s) + "    " + ta.value.substring(end);
-      ta.selectionStart = ta.selectionEnd = s + 4;
-    }
-    if((e.ctrlKey || e.metaKey) && e.key === "Enter"){
-      e.preventDefault();
-      runCode();
-    }
-  });
+  function findRealTextarea(){
+    /* Strategy: find the <div data-code-key="QKEY"> marker we injected right
+       before the Streamlit text_area widget, then walk forward in the DOM
+       to the next <textarea>. This is reliable regardless of Streamlit's
+       internal hashed widget IDs. */
+    try{
+      var doc = window.parent.document;
+      var marker = doc.querySelector('[data-code-key="' + Q + '"]');
+      if(marker){
+        /* Search forward through siblings/ancestors for the next textarea */
+        var node = marker;
+        for(var hops=0; hops<8 && node; hops++){
+          node = node.nextElementSibling || (node.parentElement ? node.parentElement.nextElementSibling : null);
+          if(node){
+            var ta = node.querySelector ? node.querySelector('textarea') : null;
+            if(ta) return ta;
+            if(node.tagName === 'TEXTAREA') return node;
+          }
+        }
+      }
+      /* Fallback: textarea closest to this iframe in DOM order */
+      var iframes = doc.querySelectorAll('iframe');
+      for (var j=0; j<iframes.length; j++){
+        if (iframes[j].contentWindow === window){
+          var block = iframes[j].closest('[data-testid="stVerticalBlock"]') || iframes[j].parentElement.parentElement;
+          var prevBlock = block ? block.previousElementSibling : null;
+          if(prevBlock){
+            var ta2 = prevBlock.querySelector('textarea');
+            if(ta2) return ta2;
+          }
+        }
+      }
+    }catch(e){}
+    return null;
+  }
 
   function setOut(txt, isErr){
     outEl.textContent = txt;
     outEl.style.color = isErr ? "#f85149" : "#3fb950";
   }
 
-  /* ── Clean, non-crashing execution with proper stdout capture ── */
   async function execCode(code){
-    var py = window._AP_pyodide;
-    var output = "";
-    var hadError = false;
+    var py = window.parent._AP_pyodide;
+    var output = "", hadError = false;
     try{
       await py.runPythonAsync(
         "import sys, io\n" +
         "if not hasattr(sys, '_orig_stdout'):\n" +
         "    sys._orig_stdout = sys.stdout\n" +
         "    sys._orig_stderr = sys.stderr\n" +
-        "sys.stdout = io.StringIO()\n" +
-        "sys.stderr = sys.stdout"
+        "sys.stdout = io.StringIO()\nsys.stderr = sys.stdout"
       );
       try{
         await py.runPythonAsync(code);
       }catch(runErr){
         hadError = true;
         py.globals.set("__js_err__", String(runErr.message));
-        try{
-          await py.runPythonAsync("sys.stdout.write('\\nError: ' + __js_err__)");
-        }catch(writeErr){
-          hadError = true;
-        }
+        try{ await py.runPythonAsync("sys.stdout.write('\\nError: ' + __js_err__)"); }
+        catch(w){ hadError = true; }
       }
       output = await py.runPythonAsync("sys.stdout.getvalue()");
-      await py.runPythonAsync(
-        "sys.stdout = sys._orig_stdout\n" +
-        "sys.stderr = sys._orig_stderr"
-      );
+      await py.runPythonAsync("sys.stdout = sys._orig_stdout\nsys.stderr = sys._orig_stderr");
       setOut(output.trim() || "(no output)", hadError || output.includes("Error:"));
     }catch(e){
-      try{
-        await py.runPythonAsync("sys.stdout = sys._orig_stdout; sys.stderr = sys._orig_stderr");
-      }catch(x){}
+      try{ await py.runPythonAsync("sys.stdout = sys._orig_stdout; sys.stderr = sys._orig_stderr"); }catch(x){}
       setOut("Error: " + e.message, true);
     }
   }
 
   function runCode(){
+    var ta = findRealTextarea();
+    if(!ta){
+      setOut("Could not find the code box. Type your code in the box below, then click Run again.", true);
+      return;
+    }
     var code = ta.value;
     if(!code.trim()){ setOut("(no code to run)", false); outEl.style.color="#888"; return; }
 
-    if(window._AP_pyodide){
+    if(window.parent._AP_pyodide){
       outEl.style.color="#8b949e"; outEl.textContent="Running...";
       execCode(code); return;
     }
 
     outEl.style.color="#8b949e";
-    outEl.textContent = "Loading Python runtime... (first run ~15s, please wait)";
+    outEl.textContent = "Loading Python runtime... (first run ~15s)";
     if(stEl) stEl.textContent = "Loading...";
+    if(window.parent._AP_pyLoading) return;
+    window.parent._AP_pyLoading = true;
 
-    if(window._AP_pyLoading){ return; }
-    window._AP_pyLoading = true;
-
-    var s = document.createElement("script");
+    var s = window.parent.document.createElement("script");
     s.src = "https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js";
     s.onload = async function(){
       try{
-        window._AP_pyodide = await loadPyodide({
+        window.parent._AP_pyodide = await window.parent.loadPyodide({
           indexURL: "https://cdn.jsdelivr.net/pyodide/v0.25.1/full/"
         });
         if(stEl) stEl.textContent = "\u2705 Ready";
@@ -354,30 +350,107 @@ def get_code_editor_html(qkey, current_code=""):
         execCode(code);
       }catch(e){
         setOut("Failed to load Python: " + e.message, true);
-        window._AP_pyLoading = false;
+        window.parent._AP_pyLoading = false;
         if(stEl) stEl.textContent = "";
       }
     };
     s.onerror = function(){
       setOut("Network error: could not load Python runtime.", true);
-      window._AP_pyLoading = false;
+      window.parent._AP_pyLoading = false;
     };
-    document.head.appendChild(s);
+    window.parent.document.head.appendChild(s);
   }
 
   if(runBtn) runBtn.onclick = runCode;
-  if(clrBtn) clrBtn.onclick = function(){
-    ta.value = "";
-    outEl.textContent = "-- Click Run or Ctrl+Enter --";
-    outEl.style.color = "#484f58";
-  };
-
 })();
-</script>"""
+</script>
+"""
+    return TEMPLATE.replace("QKEY", qkey)
 
-    html = TEMPLATE.replace("QKEY", qkey).replace("INIT_PLACEHOLDER", safe_init)
+
+def get_code_preview_html(code_text):
+    """
+    Read-only, Python-syntax-colored preview of the student's current code.
+    Pure HTML/CSS — no editing here, just a colored mirror so the plain
+    Streamlit textarea above can stay simple while still giving visual
+    feedback (keywords, strings, comments, numbers in different colors).
+    """
+    import html as _html
+    import re as _re
+
+    escaped = _html.escape(code_text) if code_text else ""
+
+    KEYWORDS = (
+        "False|None|True|and|as|assert|async|await|break|class|continue|"
+        "def|del|elif|else|except|finally|for|from|global|if|import|in|"
+        "is|lambda|nonlocal|not|or|pass|raise|return|try|while|with|yield"
+    )
+    BUILTINS = (
+        "print|len|range|str|int|float|list|dict|set|tuple|bool|type|"
+        "open|input|sum|max|min|sorted|enumerate|zip|map|filter|abs|"
+        "round|isinstance|super|self"
+    )
+
+    def colorize(line):
+        # Comments first (rest of line)
+        m = _re.search(r"#.*$", line)
+        comment = ""
+        if m:
+            comment = m.group(0)
+            line = line[:m.start()]
+
+        # Strings (single/double quoted, naive but good enough for preview)
+        line = _re.sub(
+            r"(&quot;[^&]*?&quot;|&#x27;[^&]*?&#x27;)",
+            r'<span style="color:#ce9178;">\1</span>',
+            line
+        )
+        # Numbers
+        line = _re.sub(
+            r"\b(\d+\.?\d*)\b",
+            r'<span style="color:#b5cea8;">\1</span>',
+            line
+        )
+        # Keywords
+        line = _re.sub(
+            r"\b(" + KEYWORDS + r")\b",
+            r'<span style="color:#FCA311;font-weight:600;">\1</span>',
+            line
+        )
+        # Built-in functions
+        line = _re.sub(
+            r"\b(" + BUILTINS + r")\b(?=\()",
+            r'<span style="color:#4fc1ff;">\1</span>',
+            line
+        )
+        # Function definitions (highlight the function name after def)
+        line = _re.sub(
+            r'(<span style="color:#FCA311;font-weight:600;">def</span>)(\s+)(\w+)',
+            r'\1\2<span style="color:#dcdcaa;font-weight:600;">\3</span>',
+            line
+        )
+
+        if comment:
+            line += '<span style="color:#6a9955;font-style:italic;">' + comment + '</span>'
+        return line
+
+    lines = escaped.split("\n") if escaped else [""]
+    colored_lines = [colorize(l) if l.strip() else "&nbsp;" for l in lines]
+    body = "<br>".join(colored_lines)
+
+    html = f"""
+<div style="background:#1e1e1e;border:1px solid #333;border-radius:8px;
+     padding:10px 14px;margin:4px 0 0.5rem 0;">
+  <div style="color:#666;font-size:0.72rem;margin-bottom:4px;font-family:sans-serif;">
+    &#x1F3A8; Syntax preview (updates after you click elsewhere in the box above)
+  </div>
+  <div style="font-family:'Courier New',monospace;font-size:0.85rem;
+       line-height:1.6;color:#d4d4d4;white-space:pre-wrap;word-break:break-word;">
+    {body}
+  </div>
+</div>
+"""
     return html
-
 
 
 st.markdown("""
@@ -799,12 +872,15 @@ elif st.session_state.page=="quiz":
         st.markdown(f"### {q['question']}")
         key=f"q_{i}"; current=st.session_state.answers.get(key,"")
         if q["type"]=="code":
-            st.markdown(get_code_editor_html(key, current), unsafe_allow_html=True)
+            st.markdown(f"<div data-code-key='{key}'></div>", unsafe_allow_html=True)
             ans=st.text_area(
-                "💾 Type/paste your code here (this is what gets saved):",
-                value=current, key=f"{key}_saved", height=120,
-                help="Use the editor above to write and run code. Also paste your final answer here.")
+                "🐍 Write your Python code here:",
+                value=current, key=key, height=160,
+                placeholder="# Write your Python code here...",
+                help="Write your answer here, then click Run Code below to test it.")
             if ans is not None: st.session_state.answers[key]=str(ans).strip()
+            st.markdown(get_code_runner_html(key), unsafe_allow_html=True)
+            st.markdown(get_code_preview_html(ans or ""), unsafe_allow_html=True)
         elif q["type"]=="short":
             ans=st.text_input("Your answer:",value=current,key=key,
                 placeholder="Type your answer here...")
