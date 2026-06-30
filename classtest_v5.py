@@ -606,13 +606,12 @@ if st.session_state.page=="login":
     st.markdown("---")
     if st.session_state.show_admin_login:
         with st.expander("🛡️ Admin Login",expanded=True):
-            ae=st.text_input("Admin Email",key="aei")
-            ap=st.text_input("Password",type="password",key="api_p")
+            ap=st.text_input("Admin Password",type="password",key="api_p")
             if st.button("🔑 Login as Admin",use_container_width=True):
-                AE,AP=get_admin_credentials()
-                if ae==AE and ap==AP:
+                _,AP=get_admin_credentials()
+                if ap==AP:
                     st.session_state.admin_auth=True; st.session_state.page="admin"; st.rerun()
-                else: st.error("❌ Invalid credentials")
+                else: st.error("❌ Invalid password")
         st.markdown("---")
     st.subheader("Student Login")
     email=st.text_input("Your Email Address",key="login_email")
