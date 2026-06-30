@@ -204,16 +204,15 @@ def get_security_js():
 def get_code_editor_html(qkey, current_code=""):
     """
     Working Python code editor for Streamlit.
-    Uses a plain contenteditable div styled like an IDE — works inside Streamlit iframes.
-    Pyodide runs the code. No CodeMirror (blocked by Streamlit iframe sandboxing).
+    Plain textarea (works inside Streamlit iframes) + Pyodide execution
+    with clean, non-crashing error capture.
     """
-    import json as _j
-    init_code = _j.dumps(current_code)
+    import html as _html
+    safe_init = _html.escape(current_code) if current_code else ""
 
-    TEMPLATE = """<div style="border:2px solid #FCA311;border-radius:12px;
+    TEMPLATE = r"""<div style="border:2px solid #FCA311;border-radius:12px;
      overflow:hidden;margin:0.5rem 0 1rem 0;font-family:'Courier New',monospace;">
 
-  <!-- Toolbar -->
   <div style="display:flex;justify-content:space-between;align-items:center;
        padding:8px 14px;background:#14213D;border-bottom:2px solid #FCA311;">
     <span style="color:#FCA311;font-weight:700;font-size:0.9rem;">
@@ -238,13 +237,9 @@ def get_code_editor_html(qkey, current_code=""):
     </div>
   </div>
 
-  <!-- Code input area — plain textarea, fully editable -->
   <div style="background:#1e1e1e;position:relative;">
     <textarea id="codearea_QKEY"
-      spellcheck="false"
-      autocorrect="off"
-      autocapitalize="off"
-      autocomplete="off"
+      spellcheck="false" autocorrect="off" autocapitalize="off" autocomplete="off"
       placeholder="# Write your Python code here..."
       style="width:100%;min-height:160px;background:#1e1e1e;color:#d4d4d4;
              border:none;outline:none;padding:14px 16px;
@@ -254,7 +249,6 @@ def get_code_editor_html(qkey, current_code=""):
              caret-color:#FCA311;">INIT_PLACEHOLDER</textarea>
   </div>
 
-  <!-- Output -->
   <div style="background:#0d1117;border-top:1px solid #333;padding:10px 16px;">
     <div style="color:#8b949e;font-size:0.75rem;margin-bottom:6px;font-family:sans-serif;">
       &#x1F4E4; Output:
@@ -275,7 +269,6 @@ def get_code_editor_html(qkey, current_code=""):
   var runBtn= document.getElementById("runbtn_"  + Q);
   var clrBtn= document.getElementById("clearbtn_"+ Q);
 
-  /* ── Tab key → 4 spaces ── */
   ta.addEventListener("keydown", function(e){
     if(e.key === "Tab"){
       e.preventDefault();
@@ -289,40 +282,50 @@ def get_code_editor_html(qkey, current_code=""):
     }
   });
 
-  /* ── Output helpers ── */
   function setOut(txt, isErr){
     outEl.textContent = txt;
     outEl.style.color = isErr ? "#f85149" : "#3fb950";
   }
 
-  /* ── Execute code ── */
+  /* ── Clean, non-crashing execution with proper stdout capture ── */
   async function execCode(code){
     var py = window._AP_pyodide;
+    var output = "";
+    var hadError = false;
     try{
       await py.runPythonAsync(
-        "import sys, io\n_b=io.StringIO()\nsys.stdout=_b\nsys.stderr=_b"
+        "import sys, io\n" +
+        "if not hasattr(sys, '_orig_stdout'):\n" +
+        "    sys._orig_stdout = sys.stdout\n" +
+        "    sys._orig_stderr = sys.stderr\n" +
+        "sys.stdout = io.StringIO()\n" +
+        "sys.stderr = sys.stdout"
       );
       try{
         await py.runPythonAsync(code);
-      }catch(err){
-        await py.runPythonAsync(
-          "_b.write('\\nError: '+" +
-          JSON.stringify(String(err.message)) + ")"
-        );
+      }catch(runErr){
+        hadError = true;
+        py.globals.set("__js_err__", String(runErr.message));
+        try{
+          await py.runPythonAsync("sys.stdout.write('\\nError: ' + __js_err__)");
+        }catch(writeErr){
+          hadError = true;
+        }
       }
-      var out = await py.runPythonAsync(
-        "sys.stdout=sys.__stdout__\nsys.stderr=sys.__stderr__\n_b.getvalue()"
+      output = await py.runPythonAsync("sys.stdout.getvalue()");
+      await py.runPythonAsync(
+        "sys.stdout = sys._orig_stdout\n" +
+        "sys.stderr = sys._orig_stderr"
       );
-      setOut(out.trim() || "(no output)", out.includes("Error:"));
+      setOut(output.trim() || "(no output)", hadError || output.includes("Error:"));
     }catch(e){
       try{
-        await py.runPythonAsync("sys.stdout=sys.__stdout__;sys.stderr=sys.__stderr__");
+        await py.runPythonAsync("sys.stdout = sys._orig_stdout; sys.stderr = sys._orig_stderr");
       }catch(x){}
-      setOut("Runtime error: " + e.message, true);
+      setOut("Error: " + e.message, true);
     }
   }
 
-  /* ── Run button ── */
   function runCode(){
     var code = ta.value;
     if(!code.trim()){ setOut("(no code to run)", false); outEl.style.color="#888"; return; }
@@ -372,9 +375,6 @@ def get_code_editor_html(qkey, current_code=""):
 })();
 </script>"""
 
-    # Replace QKEY placeholder and insert initial code safely
-    import html as _html
-    safe_init = _html.escape(current_code) if current_code else ""
     html = TEMPLATE.replace("QKEY", qkey).replace("INIT_PLACEHOLDER", safe_init)
     return html
 
@@ -803,7 +803,7 @@ elif st.session_state.page=="quiz":
             st.markdown(get_code_editor_html(key, current), unsafe_allow_html=True)
             ans=st.text_area(
                 "💾 Type/paste your code here (this is what gets saved):",
-                value=current, key=key, height=120,
+                value=current, key=f"{key}_saved", height=120,
                 help="Use the editor above to write and run code. Also paste your final answer here.")
             if ans is not None: st.session_state.answers[key]=str(ans).strip()
         elif q["type"]=="short":
