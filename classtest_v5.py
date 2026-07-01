@@ -1007,7 +1007,7 @@ if st.session_state.page=="login":
         db_update("students",{"email":email},{"login_attempts":0})
         course=courses.iloc[0].to_dict()
         course_id=str(course["course_id"]); course_name=str(course["course_name"])
-        duration=int(course.get("duration_mins",40))*60
+        duration=int(course.get("duration_mins",30))*60
         q_count=int(course.get("question_count",0) or 0)
         device_id=make_device_id(email)
         blk=db_one("blocked_devices",{"device_id":device_id})
@@ -1058,7 +1058,7 @@ if st.session_state.page=="login":
 # =====================================================================
 elif st.session_state.page=="instructions":
     course=st.session_state.current_course or {}
-    duration=int(course.get("duration_mins",40))
+    duration=int(course.get("duration_mins",30))
     pass_mark=int(course.get("pass_mark",PASS_MARK))
     total_q=len(st.session_state.questions)
     attempt_n=st.session_state.attempt_num
@@ -1113,7 +1113,7 @@ elif st.session_state.page=="quiz":
         st.session_state.security_js_injected=True
     course=st.session_state.current_course or {}
     course_id=str(course.get("course_id",""))
-    duration=int(course.get("duration_mins",40))*60
+    duration=int(course.get("duration_mins",30))*60
     if st.session_state.start_time is None: st.session_state.start_time=time.time()
     elapsed=time.time()-st.session_state.start_time
     remaining=duration-elapsed
@@ -1122,23 +1122,32 @@ elif st.session_state.page=="quiz":
     # Timer JS — separate from HTML to prevent raw code display
     timer_js = f"""<script>
     (function(){{
-        let t={int(remaining)};
+        const START_MS = Date.now();
+        const TOTAL_SECS = {int(remaining)};
+        const DUR = {duration};
+        let warned5 = false;
         function tick(){{
-            if(t<=0){{window.location.href='?auto_submit=1';return;}}
-            const m=Math.floor(t/60).toString().padStart(2,'0');
-            const s=(t%60).toString().padStart(2,'0');
-            const el=document.getElementById('lt');
+            const elapsed = Math.floor((Date.now() - START_MS) / 1000);
+            const t = Math.max(0, TOTAL_SECS - elapsed);
+            if(t <= 0){{window.location.href='?auto_submit=1'; return;}}
+            const m = Math.floor(t/60).toString().padStart(2,'0');
+            const s = (t%60).toString().padStart(2,'0');
+            // Small timer top-right
+            const el = document.getElementById('lt');
             if(el){{
-                el.textContent='\u23f1 '+m+':'+s;
-                if(t<300) el.style.background='linear-gradient(135deg,#f5576c,#f093fb)';
+                el.textContent = m+':'+s;
+                el.style.color = t<300 ? '#f85149' : '#FCA311';
             }}
-            const pr=document.getElementById('lp');
-            if(pr) pr.style.width=(({duration}-t)/{duration}*100)+'%';
-            if(t===300) alert('\u26a0\ufe0f 5 minutes remaining!');
-            t--;
+            // Background watermark timer
+            const wm = document.getElementById('timer-watermark');
+            if(wm) wm.textContent = m+':'+s;
+            // Progress bar
+            const pr = document.getElementById('lp');
+            if(pr) pr.style.width = ((DUR - t)/DUR*100)+'%';
+            if(!warned5 && t <= 300){{ warned5=true; alert('\u26a0 5 minutes remaining!'); }}
         }}
         tick();
-        setInterval(tick,1000);
+        setInterval(tick, 500);
     }})();
     </script>"""
     st.markdown(timer_js, unsafe_allow_html=True)
@@ -1148,22 +1157,40 @@ elif st.session_state.page=="quiz":
     elapsed_pct = (elapsed/duration)*100
 
     st.markdown(f"""
-    <div class="quiz-header">
+    <!-- Fixed top-right timer badge — always visible while scrolling -->
+    <div id="lt" style="
+        position:fixed; top:12px; right:16px; z-index:99999;
+        background:#14213D; border:2px solid #FCA311;
+        color:#FCA311; padding:6px 16px; border-radius:10px;
+        font-size:1.3rem; font-weight:800;
+        font-family:'Courier New',monospace;
+        box-shadow:0 4px 16px rgba(0,0,0,0.5);
+        letter-spacing:2px;
+    ">{mins:02d}:{secs:02d}</div>
+
+    <!-- Large transparent watermark timer behind content -->
+    <div id="timer-watermark" style="
+        position:fixed; bottom:5vh; right:3vw; z-index:0;
+        font-size:20vw; font-weight:900;
+        font-family:'Courier New',monospace;
+        color:rgba(252,163,17,0.06);
+        pointer-events:none; user-select:none;
+        letter-spacing:4px; line-height:1;
+    ">{mins:02d}:{secs:02d}</div>
+
+    <!-- Course name + student bar -->
+    <div class="quiz-header" style="position:relative;z-index:1;">
         <div style="color:white;">
-            <h2 style="margin:0;color:white;font-size:1.4rem;">&#x1F4DD; {course_name_display}</h2>
-            <p style="margin:4px 0;opacity:0.85;font-size:0.9rem;">{student_display}</p>
-        </div>
-        <div id="lt" style="background:linear-gradient(135deg,#FCA311,#e8940a);
-            color:#14213D;padding:0.9rem 1.8rem;border-radius:12px;
-            font-size:1.8rem;font-weight:800;min-width:150px;text-align:center;
-            box-shadow:0 8px 24px rgba(0,0,0,0.3);">
-            &#x23f1; {mins:02d}:{secs:02d}
+            <h2 style="margin:0;color:white;font-size:1.3rem;">&#x1F4DD; {course_name_display}</h2>
+            <p style="margin:4px 0;opacity:0.8;font-size:0.85rem;">{student_display}</p>
         </div>
     </div>
-    <div style="width:100%;height:8px;background:rgba(255,255,255,0.2);
-        border-radius:5px;overflow:hidden;margin-bottom:20px;">
+
+    <!-- Progress bar -->
+    <div style="width:100%;height:6px;background:rgba(255,255,255,0.15);
+        border-radius:5px;overflow:hidden;margin-bottom:16px;position:relative;z-index:1;">
         <div id="lp" style="height:100%;background:linear-gradient(90deg,#FCA311,#ffd060);
-            width:{elapsed_pct:.1f}%;transition:width 1s linear;"></div>
+            width:{elapsed_pct:.1f}%;transition:width 0.5s linear;"></div>
     </div>
     """, unsafe_allow_html=True)
     total=len(st.session_state.questions)
@@ -1297,7 +1324,7 @@ elif st.session_state.page=="admin":
                 cname=st.text_input("Course Name",key="nc_name")
                 ccode=st.text_input("Access Code",key="nc_code").upper()
             with c2:
-                cdur=st.number_input("Duration (mins)",5,300,40,key="nc_dur")
+                cdur=st.number_input("Duration (mins)",5,300,30,key="nc_dur")
                 cpas=st.number_input("Pass Mark (%)",1,100,50,key="nc_pas")
                 cq=st.number_input("Questions per exam (0=all)",0,500,0,key="nc_q",
                     help="e.g. 20 = randomly pick 20 from bank each exam")
@@ -1318,7 +1345,7 @@ elif st.session_state.page=="admin":
                 cid_=str(row["course_id"]); cname_=str(row["course_name"])
                 ccode_=str(row["access_code"]); enab_=bool(row.get("enabled",False))
                 dur_=row.get("duration_mins",40); pas_=row.get("pass_mark",50); qcnt_=row.get("question_count",0)
-                ca,cb,cc,cd=st.columns([4,2,1,1])
+                ca,cb,cc,cd,ce=st.columns([3,2,1,1,1])
                 with ca:
                     st.markdown(f"**{cname_}** `{cid_}`  \n{'🟢 Active' if enab_ else '🔴 Disabled'}"
                                 f" | ⏱ {dur_} min | 🎯 {pas_}% | 📚 {qcnt_} Qs")
@@ -1327,8 +1354,36 @@ elif st.session_state.page=="admin":
                     if st.button("Disable" if enab_ else "Enable",key=f"tog_{cid_}"):
                         db_update("courses",{"course_id":cid_},{"enabled":not enab_}); st.rerun()
                 with cd:
-                    if st.button("🗑️",key=f"delc_{cid_}"):
+                    if st.button("✏️",key=f"edit_{cid_}",help="Edit this course"):
+                        st.session_state[f"edit_course_{cid_}"] = True
+                        st.rerun()
+                with ce:
+                    if st.button("🗑️",key=f"delc_{cid_}",help="Delete course"):
                         db_delete("courses",{"course_id":cid_}); st.rerun()
+                # Inline edit form — appears below the row when ✏️ clicked
+                if st.session_state.get(f"edit_course_{cid_}"):
+                    with st.form(key=f"form_edit_{cid_}"):
+                        st.markdown(f"**Editing: {cname_}**")
+                        ec1,ec2=st.columns(2)
+                        with ec1:
+                            e_name  = st.text_input("Course Name", value=cname_, key=f"e_name_{cid_}")
+                            e_code  = st.text_input("Access Code", value=ccode_, key=f"e_code_{cid_}").upper()
+                        with ec2:
+                            e_dur   = st.number_input("Duration (mins)", 5, 300, int(dur_), key=f"e_dur_{cid_}")
+                            e_pas   = st.number_input("Pass Mark (%)", 1, 100, int(pas_), key=f"e_pas_{cid_}")
+                            e_qcnt  = st.number_input("Questions per exam (0=all)", 0, 500, int(qcnt_), key=f"e_qcnt_{cid_}")
+                            e_enab  = st.toggle("Enabled", value=enab_, key=f"e_enab_{cid_}")
+                        sc1,sc2=st.form_submit_button("💾 Save Changes"), st.form_submit_button("✖ Cancel")
+                        if sc1:
+                            db_upsert("courses", {
+                                "course_id":cid_, "course_name":e_name.strip(),
+                                "access_code":e_code.strip(), "enabled":e_enab,
+                                "duration_mins":e_dur, "pass_mark":e_pas, "question_count":e_qcnt
+                            }, "course_id")
+                            st.session_state.pop(f"edit_course_{cid_}", None)
+                            st.success(f"✅ {e_name} updated!"); st.rerun()
+                        if sc2:
+                            st.session_state.pop(f"edit_course_{cid_}", None); st.rerun()
                 with st.expander(f"📁 Questions — {cname_}"):
                     st.markdown("**CSV or Excel** — columns: `question`,`answer`,`type` + `option1-4` for MCQ + optional `difficulty`")
                     up=st.file_uploader(f"Upload for {cname_}",type=["csv","xlsx","xls"],key=f"up_{cid_}")
@@ -1353,10 +1408,21 @@ elif st.session_state.page=="admin":
                                                 "type":str(qrow.get("type","mcq")),
                                                 "difficulty":str(qrow.get("difficulty","medium"))})
                                         if rows:
-                                            for chunk in [rows[i:i+50] for i in range(0,len(rows),50)]:
+                                            # Deduplicate by question text before saving
+                                            seen_q = set()
+                                            unique_rows = []
+                                            for r2 in rows:
+                                                qtext = str(r2.get("question","")).strip().lower()
+                                                if qtext not in seen_q:
+                                                    seen_q.add(qtext)
+                                                    unique_rows.append(r2)
+                                            dupes = len(rows) - len(unique_rows)
+                                            for chunk in [unique_rows[i:i+50] for i in range(0,len(unique_rows),50)]:
                                                 requests.post(_url("questions"), headers=_headers(), json=chunk)
-                                            db_update("courses",{"course_id":cid_},{"question_count":len(rows)})
-                                        st.success(f"✅ {len(rows)} questions saved!"); st.rerun()
+                                            db_update("courses",{"course_id":cid_},{"question_count":len(unique_rows)})
+                                            msg = f"✅ {len(unique_rows)} questions saved!"
+                                            if dupes > 0: msg += f" ({dupes} duplicate{'s' if dupes>1 else ''} removed)"
+                                        st.success(msg); st.rerun()
                         except Exception as e: st.error(f"Error: {e}")
                     cur_q=db_all("questions",{"course_id":cid_})
                     if not cur_q.empty:
